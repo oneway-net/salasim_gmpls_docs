@@ -51,9 +51,9 @@
 |---|---|
 | lighty 控制器（RESTCONF 北向、NETCONF 南向挂载） | 本地对夹具端到端通过；**未部署，社区版 RESTCONF 无认证** |
 | emulator NETCONF 管理面（接口/故障，节点仿真时钟生效） | 本地通过，默认关闭（`-Dnode.netconf.enabled=true`） |
-| PCE NETCONF 管理面（只读配置、`inject-fault`） | 本地通过；`inject-fault` 仍走"可见掩码"路径，**未接 `FaultExecutionQueue`** |
+| PCE NETCONF 管理面（只读配置、`report-link-state`） | 本地通过；`inject-fault` 已删除（2026-10 Phase 1），故障只经 `report-link-state` 进入 `FaultExecutionQueue` |
 | 时间门控 `FaultExecutionQueue` + 回执游标接口 | PCE 已提交（df81b42） |
-| backend 提前下发故障（`SALASIM_FAULT_DELIVERY=timer\|early`） | 已提交，**未在 169 验证** |
+| backend 提前下发故障 | 已提交，唯一下发方式（`SALASIM_FAULT_DELIVERY` 开关与 timer 模式已删除）；**未在 169 验证** |
 | `OspfFaultTranslator` / `submitObservedFault` | 已提交；规则可复用于 NETCONF 通知输入 |
 | 链路状态 NETCONF 通知 | **未定义**（YANG 只有 `control-plane-lateness`） |
 | 控制器能否订阅被挂载设备的通知并转发 | **未验证**（C1-0 先做 spike） |
@@ -92,12 +92,12 @@ PCEP / RSVP-TE / JetStream 遥测：不变（遥测直达 Backend，不经控制
 - **C1-0 spike**：用夹具验证 ODL 挂载设备的 NETCONF 通知能被控制器应用接收（或经 RESTCONF SSE 读到）。不通过则改为 PCE 自订阅（备选，见 §4）。
 - **C1-1 YANG**：`salasim-fault` 新增 `link-state-changed` 通知（run-id、链路 id、方向、状态 up/down、节点仿真时刻、实际处理时刻）；PCE 新增 `report-link-state` RPC。重新生成绑定并同步。
 - **C1-2 emulator**：`NodeLinkStateApplier` 应用接口变化后发布通知（用已有的 `publishNotification`）；覆盖提前到达（等节点时钟）与迟到（记录 lateness）两种情形的测试。
-- **C1-3 PCE**：`inject-fault` 改接 `FaultExecutionQueue`；新增 `report-link-state` 的处理，把 `OspfFaultTranslator` 的去重/快照校验规则抽成与输入无关的 `ObservedLinkStateTranslator`（OSPF 与 NETCONF 两种输入共用）。**同一条跨域链路两端各报一次的去重，先读 parent 的 ChildImpact 代码核对。**
+- **C1-3 PCE**：新增 `report-link-state` 的处理，把 `OspfFaultTranslator` 的去重/快照校验规则抽成与输入无关的 `ObservedLinkStateTranslator`（OSPF 与 NETCONF 两种输入共用）。**同一条跨域链路两端各报一次的去重，先读 parent 的 ChildImpact 代码核对。**
 - **C1-4 控制器**：订阅 emulator 通知并转发到 PCE；按链路两端所在域选择目标 PCE。
-- **C1-5 backend**：`fault_plan_delivery.py` 新增控制器后端（`SALASIM_FAULT_DELIVERY_VIA=controller|pce`，默认 `pce`）；回执仍用 PCE 的游标接口。
+- **C1-5 backend**：`fault_plan_delivery.py` 经控制器下发（`fault_controller_delivery.py`）；回执仍用 PCE 的游标接口。
 - **验收（169）**：同一 seed 下，受影响 LSP 集合与旧路径一致；故障生效延迟（planned→applied）p99 不劣于旧路径；时钟暂停 0 次；PCE 重启后已到期命令不重发；`windowLagEvents==0`。
-- **回退**：把开关切回 `pce`。
-- **收尾（验收通过后）**：删除 backend 的 `_deliver_random_link_fault*` 与定时器机制、PCE 旧 `/sim/faults/*` 的 backend 调用路径。
+- **回退**：无（旧路径已删除，见收尾）。
+- **收尾（已完成，2026-10 Phase 1，未等 169 验收）**：已删除 backend 的 `_deliver_random_link_fault*` 与定时器机制、`SALASIM_FAULT_DELIVERY(_VIA)` 开关、PCE 的 `/sim/faults/*` 故障路由（仅保留 `GET /sim/faults/receipts`）与 `inject-fault` RPC。
 
 ### C1-6　确认证据（controller 路径的故障如何算"已应用"）
 问题：controller 路径下 backend 只知道"控制器接受了两端的 PUT"，不知道故障是否真的在 PCE 生效。设计（不新增回调通道，复用现有机制）：

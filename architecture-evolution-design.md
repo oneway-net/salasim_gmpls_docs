@@ -97,7 +97,7 @@ Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──P
 - **时间表预先下发。** 帧序列以 RFC 9195 YANG instance data 文件的形式，在 run 启动时一次性下发，复用 `TOPOLOGY_SCHEDULE_FILE` 机制。PCE 按自己的时钟在帧时刻原子切换。
 - 删除 Backend 按 tick 推帧的逻辑，包括"所有 PCE 都提交才推下一帧"的门：`topology_clock_service.py:6631`、`6790` 和 `_frame_refill_window`。
 - 各域的帧一致性靠 chrony/PTP 时钟同步加上帧同时刻生效来保证，不再靠互相等待。
-- 按计划发生的故障（现状）：故障是在运行开始时**提前编排**的，但 backend 的定时器要到**计划时刻才下发**（`arm_random_link_fault_timers` → `_deliver_random_link_faults` → PCE `/sim/faults`），所以现在 backend 仍在故障生效的时间路径上。目标：下发时就带生效仿真时刻、**提前下发**，由节点和 PCE 按自己的时钟执行（模型 `salasim-fault` 已支持，提前下发这一步还没做）。
+- 按计划发生的故障（现状）：故障在运行开始时**提前编排**，并在 PCE 时钟提交前经控制器**一次性提前下发**到链路两端节点，每条带生效仿真时刻，由节点按自己的时钟执行，PCE 经 `report-link-state` 得知；backend 已不在故障生效的时间路径上（定时器下发路径已于 2026-10 Phase 1 删除）。
 - **记录两个时间**：事件规定的时刻，以及控制面实际处理完成的时刻，差值作为控制面反应时延输出。
 - 加一个守护测试：任何非操作员入口写 `ClockAnchor` 时直接失败。
 
@@ -148,7 +148,7 @@ Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──P
 - **带宽**：OSPF-TE 报上来的未预留带宽只用来和账本对账，不覆盖账本，LSP-DB 仍是带宽的权威来源。RFC 7471 的时延可以作为 MIN_DELAY 目标的输入。
 - **WSON**（将来）：节点代理通过 FRR OSPF API 自己发 opaque LSA（RFC 7688 波长可用性），编码复用 `AvailableLabels`、`BitmapLabelSet`。SSON 已移出范围，见第 2 节。
 - **speedup 校验**：`simulation.v1.yaml` 规定开启 OSPF 时 speedup 必须为 1.0，run 启动 preflight 不满足就返回 409。
-- **删除**：Backend 发给 PCE 的故障 HTTP 链路，即 `arm_random_link_fault_timers` 到 `_deliver_random_link_fault` 再到 `/api/v1/sim/faults/*`。故障改由控制器经 NETCONF 下发。
+- **删除（已完成，2026-10 Phase 1）**：Backend 发给 PCE 的故障 HTTP 链路，即 `arm_random_link_fault_timers` 到 `_deliver_random_link_fault` 再到 `/api/v1/sim/faults/*`。故障改由控制器经 NETCONF 下发。
 - **删除旧 OSPF 代码**：emulator `transport/ospf/*`、PCE 和 topology 两份 `tedb/ospfv2/*`、`TopologyUpdaterThread` 的 OSPF 分支、`netManager`/`vntm` 的发送器。`satenets/master` 分支不合并。
 
 ### W6　NETCONF/RESTCONF 控制器化

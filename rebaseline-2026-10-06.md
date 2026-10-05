@@ -37,6 +37,7 @@
 - PCE：HTTP 故障路由（`/sim/faults/*` 中被控制器链路取代的部分）、`submitObservedFault` 之外的旧入口。
 - 同时删除相应测试、配置项、漂移登记（`_UNOWNED_BY_PROFILE` 中对应条目）、文档。
 - 说明：PCE 的 HTTP `sim/start`、`sim/clock`、`sim/frames` 在类型化 RPC 完成前不能删，它们在 Phase 2 与新路径**同一变更集**替换。
+- 状态（2026-10-05）：上述删除已在 `framework-enhancement` 分支提交，未推送、未部署、未在 169 端到端验证。backend c1afd04；PCE 71565e2（另删 NETCONF `inject-fault` RPC）；yang d2bd38e（删 `rpc inject-fault`）；controller 0f0c6c2（integration-smoke 去掉 inject-fault 步骤）。`netconf_credential_store` 整个开关删除，存储随运行模式确定：tenant 用 ConfigMap（租户网关拒绝 Secret），其余用 Secret。`_UNOWNED_BY_PROFILE` 中没有对应条目。
 
 ### Phase 2 类型化运行启动与标准通知
 - netconf 库 N1（schema 驱动的必填/choice/容器校验）→ PCE P3（五个 RPC，绑定生成类）→ 控制器 `salasim-pce-fleet`（C1）→ backend 类型化输入生产者（B2），并在**同一变更集**删除 HTTP `/sim/start`、`/sim/clock`、`/sim/frames`、`RunStartConfigJson`、`requireExactKeys`、backend 的 JSON 构建器和 `SALASIM_RUN_START_VIA`（不引入该开关）。
