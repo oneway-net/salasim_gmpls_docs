@@ -47,7 +47,7 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
 | D-S9 | 注册与身份 | 手机号短信验证注册即可用免费额度；充值或开发票前做个人或企业认证；支持组织、邀请成员、角色 |
 | D-S10 | 失败计费 | 平台原因（组件故障、资源受限、基础设施）不收费并全额解冻；用户原因（配置不可行、主动取消、预算耗尽）按实际用量；归因可审计、可申诉，无法判定时按平台原因处理 |
 | D-C2 | 生命周期 | Kubernetes Operator + CRD（推翻此前"不写 Operator"） |
-| D-C3 | 编排 | 控制器内的 NETCONF 事务（candidate + confirmed-commit），MDSC 跨 PNC、PNC 跨设备两级嵌套（§18 O11），不引入工作流引擎 |
+| D-C3 | 编排 | 控制器内的两阶段类型化 RPC（`prepare-run*` 惰性布置 → `commit-clock*` 生效，`reset-run*` 中止），MDSC 跨 PNC、PNC 跨设备两级（§18 O11 已定）；故障/接口配置逐设备幂等；不依赖 candidate lock/confirmed-commit（ODL 服务端不支持）；不引入工作流引擎 |
 | D-C4 | 存储 | JetStream + PostgreSQL/Timescale，替换全部 SQLite |
 | D-C5 | 授权 | 统一网关做 OIDC 认证；平台 API 按组织角色授权；实验床 MDSC 的 RESTCONF 用 NACM，按租约授予和收回；服务间 mTLS |
 | D-C6 | 节点粒度 | 分片：一个 pod 承载多个节点槽位，每个节点仍是独立协议实例和独立 NETCONF 端点 |
@@ -214,7 +214,7 @@ Ready ──绑定租约──▶ Leased(prepare → run → seal) ──▶ Res
 1. 用户选模板或私有场景、填参数 → 任务服务校验与编译（失败即返回，不收费）→ 得出所需规格与估价。
 2. 用户确认上限 → **一个事务**：写不可变任务清单 + 冻结上限积分 → 创建挂起的 `SimulationJob`。
 3. Kueue 按组织配额与公平共享排队 → 准入 → Operator 绑定一套 Ready 的实验床（租约生效，计量开始）→ 签发本次运行的凭据与授权。
-4. 运行驱动调 MDSC `prepare-run`：一个 NETCONF 事务把运行配置写入 Parent PCE 与全部启用的 PNC，各 PNC 在其提交中再以本域事务写入 Domain PCE 与节点（lock → 写 candidate → validate → confirmed-commit，两级嵌套，§18 O11），再下发统一时钟锚点 T0 并确认。任一失败全部回滚，任务以平台原因失败，实验床进入重置。
+4. 运行驱动调 MDSC `prepare-run`：MDSC 先让各 PNC 准备（PNC 准备自身抽象拓扑并对本域 Domain PCE 调 `prepare-run`），全部成功后合成抽象排程并让 Parent PCE 准备；随后 `commit-clock*` 下发统一时钟锚点 T0（两级类型化 RPC，§18 O11，详见 `phase1-implementation-design.md` C3）。任一失败全部回滚，任务以平台原因失败，实验床进入重置。
 5. 各组件在 T0 按自己的时钟运行；时间表已预先下发，没有人推帧。
 6. 运行驱动按故障计划到期下发故障（MDSC → 相关 PNC → 两端节点 → 节点按仿真时刻生效 → YANG-push → PNC → Domain PCE 时钟队列 → 重路由；PNC 同时更新抽象拓扑并经 MPI YANG-push 报 MDSC，域间链路由 MDSC 转报 Parent PCE）；计划、下发、节点生效、PCE 生效四个时间记入事实。
 7. 累计用量将达上限时，按用户预设"到上限即停止"（用户预先授权的操作员动作，结果标"预算耗尽"）。
@@ -431,6 +431,6 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | O8 | 交互会话是否允许修改场景 | 不允许，只允许暂停、恢复、注入故障 |
 | O9 | 交互会话的空闲超时与最长时长 | 按套餐设定 |
 | O10 | 平台升级后旧镜像版本的重跑支持（保留旧池多久） | 保留一个小版本周期，之后标注"版本已变化" |
-| O11 | MDSC→PNC→设备两级事务的语义：PNC 的 confirmed-commit 是否在 MDSC 确认前对设备保持未确认、超时如何级联回滚 | Phase 1 设计时定 |
+| O11 | MDSC→PNC→设备两级事务的语义 | **已定（2026-10-06）**：两阶段类型化 RPC（salasim-pce-run / salasim-pce-fleet），prepare 惰性、commit 生效、reset/release 中止，按 run-id 幂等；commit 部分失败冻结为 speedup 0；故障/接口配置逐设备幂等，任一失败则启动失败。理由：ODL netconf-server 的 candidate lock 不互斥、无 confirmed-commit/validate。详见 `phase1-implementation-design.md` §5 C3 |
 | O12 | 抽象拓扑的形式与 Parent PCE 的改造 | **已定（2026-10-06）**：混合方案，k 近邻抽象链路引导 + 子 PCE 权威，见 `actn-abstract-topology-analysis.md` §5 |
 | O13 | 多出的 D+1 个 lighty 实例的资源开销与启动时间（影响规格单价与池容量） | Phase A 实测 |
