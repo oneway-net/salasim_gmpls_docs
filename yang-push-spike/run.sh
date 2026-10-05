@@ -28,8 +28,8 @@ cp "$SPIKE"/src/test/java/net/salasim/netconf/mgmt/yangpush/*.java src/test/java
 
 # the standard modules the push stack needs (vendored in salasim_gmpls_yang/ietf); ietf-datastores, ietf-netconf-acm,
 # ietf-inet-types are already served from the ODL jars by YangResources.SERVER_MODULES
-for f in ietf-subscribed-notifications@2019-09-09.yang ietf-yang-push@2019-09-09.yang ietf-yang-patch.yang \
-         ietf-restconf.yang ietf-network-instance.yang ietf-ip@2018-02-22.yang ietf-yang-schema-mount@2019-01-14.yang; do
+for f in ietf-subscribed-notifications@2019-09-09.yang ietf-yang-push@2019-09-09.yang ietf-yang-patch@2017-02-22.yang \
+         ietf-restconf@2017-01-26.yang ietf-network-instance@2019-01-21.yang ietf-ip@2018-02-22.yang ietf-yang-schema-mount@2019-01-14.yang; do
   cp "$ROOT/salasim_gmpls_yang/ietf/$f" src/test/resources/yang/
   echo "$(shasum -a 256 "src/test/resources/yang/$f" | cut -d' ' -f1)  $f" >> src/test/resources/yang/SOURCE.txt
 done

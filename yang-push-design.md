@@ -269,7 +269,7 @@ emulator 的发布路径与 `InterfaceNames`；控制器 relay 的 5277 订阅�
 ## 8. 对 `salasim_gmpls_yang` 的模块变更（只列出，未改）
 
 1. 新增 vendored：`ietf-system-capabilities@2022-02-17`、`ietf-notification-capabilities@2022-02-17`（RFC 9196；已在 `yang-bootstrap/yang-models/standard/ietf/RFC/` 同一 pin 里；导入 `ietf-netconf-acm`、`ietf-yang-library`、`ietf-yang-push`，都已在列）。
-2. 命名规范化：`ietf-yang-patch.yang`（内容 revision 2017-02-22）、`ietf-restconf.yang`（2017-01-26）、`ietf-network-instance.yang`（无后缀）等 vendored 文件名缺 `@revision`，与其余不一致；R3 要求制品按 revision 命名。
+2. 命名规范化：`ietf-yang-patch@2017-02-22.yang`（内容 revision 2017-02-22）、`ietf-restconf@2017-01-26.yang`（2017-01-26）、`ietf-network-instance@2019-01-21.yang`（无后缀）等 vendored 文件名缺 `@revision`，与其余不一致；R3 要求制品按 revision 命名。
 3. 全套 push 模块的依赖闭包（已验证能一起解析）：`ietf-subscribed-notifications` → `ietf-interfaces`、`ietf-netconf-acm`、`ietf-network-instance`、`ietf-restconf`、`ietf-yang-types`、`ietf-inet-types`；`ietf-network-instance` → `ietf-ip`、`ietf-yang-schema-mount`；`ietf-yang-push` → `ietf-datastores`、`ietf-yang-patch`。**设备挂载时控制器要经 `get-schema` 多取这些模块**（有缓存目录，但首次 ×设备数）。
 4. `salasim-fault`：删除 `link-state-changed`、`link-state-endpoint`；新增 `oper-transition`（§3.4）；`report-link-state` 输入改为 `nw:network-ref` + `nt:link-id` + `te-types:te-oper-status` + 时间/故障字段；预发布阶段按 R3 在原修订上收敛，不另起修订。
 5. 拓扑实例用 `ietf-network`、`ietf-network-topology`、`ietf-te-topology` 本身，不新建 salasim 模块；确需 salasim 扩展（如 `plane-id`、链路类型）用一个小的 augment 模块并在 D3 里定。`salasim-sat-topology`（自定义的帧容器）与之关系待 Phase 2 的"类型化运行启动"一起定。
