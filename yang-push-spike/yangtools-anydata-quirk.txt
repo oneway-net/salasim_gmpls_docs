@@ -1,0 +1,19 @@
+yangtools 15.0.2 XmlParserStream (used by ODL netconf-client 11.0.0 NetconfMessageTransformer.toNotification) and anydata
+Matrix run on the real client transformer, push-change-update with an RFC 8072 edit whose `value` is anydata
+(source: experiment /tmp/claude-501/ypx/anyprobe/Matrix.java, output pasted):
+
+  single-edit value-last                    FAIL  Schema for node with name yang-patch ... does not exist in parent
+  single-edit value-first                   FAIL  Attributes can be extracted only from START_ELEMENT.
+  single-edit value-middle                  FAIL  Attributes can be extracted only from START_ELEMENT.
+  two-edits value-last,delete               FAIL  Schema for node with name edit ... does not exist in parent
+  two-edits both value-last                 FAIL
+  WS single-edit value-last                 OK    (one "\n" text node directly after </value>)
+  WS two-edits both value-last              OK
+  WS+edit-ws two-edits                      OK
+  WS after value, create+delete             OK
+  single-edit no-value(delete)              OK    (no anydata)
+
+Reading of XmlParserStream.read(): after an anydata, readAnyXmlValue() leaves the reader where a following
+element tag is mis-consumed unless a character event follows. The publisher therefore appends a whitespace text
+node after every anydata it writes (YangPushPrototype). Upstream bug to report; remove the workaround when fixed.
+Same quirk: anydata followed by a sibling element in the SAME parent fails with stream readers too (AnyProbe).

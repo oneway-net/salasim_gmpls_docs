@@ -1,0 +1,14 @@
+--- /Users/oneway/dev/salasim_gmpls/salasim_gmpls_netconf/src/main/java/net/salasim/netconf/mgmt/NetconfManagementServer.java	2026-10-02 23:53:43
++++ src/main/java/net/salasim/netconf/mgmt/NetconfManagementServer.java	2026-10-05 21:18:34
+@@ -357,6 +357,11 @@
+         return new NetconfOperationRouterImpl(aggregated.createService(sessionId), monitoring, sessionId);
+     }
+ 
++    /** SPIKE HOOK: lets a consumer add NETCONF operations (e.g. RFC 8639/8641 subscriptions) to the aggregated server. */
++    public void addOperationServiceFactory(org.opendaylight.netconf.server.api.operations.NetconfOperationServiceFactory f) {
++        aggregated.onAddNetconfOperationServiceFactory(f);
++    }
++
+     public NetconfMonitoringService monitoring() {
+         return monitoring;
+     }
