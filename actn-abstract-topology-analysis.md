@@ -194,7 +194,13 @@ MPI 走 NETCONF + YANG-push，承载 ietf-te-topology（RFC 8795）/ ietf-te；P
 | S6 | 跨仓 E2E | 2–3 | **3–5** | D 个 PNC 加 1 个 MDSC；故障从 ① 一路到 ④，再触发 Parent 重路由 |
 | **合计** | | **22.5–34.5** | **39.5–60.5（约 40–61）** | 再加 §3.3 的 15–23，总计约 **55–84** |
 
-## 5. 需要用户决定的事项
+## 5. 用户决定（2026-10-06，已定）
+
+接受混合方案 (c) 与约 55–84 agent-day 的估算。A1–A9 全部按推荐：A1 k 近邻（默认 8）；A2 只带 max-link-bandwidth；A3 SRLG 证据移到 backend 分析，Parent 以子 PCE 执行 XRO 为准；A4 删除 LEGACY；A5 保留全 ERO（只用于诊断、遥测）；A6 子 PCE 可达性 PCNtf；A7 RFC 9195 每帧一份 te-topology（R2 登记：TVR 成为 RFC 后迁移）；A8 MDSC → Parent 类型化 RPC；A9 netconf 库自有 datastore，PNC 复制写入。k 近邻对路由质量的影响须在实施时用 A/B 回归量化。
+
+以下为决定前的选项，保留备查。
+
+### 5.1 决定前的选项
 
 | # | 问题 | 选项 | 推荐 |
 |---|---|---|---|

@@ -386,7 +386,7 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | 合规 | 无 | 备案、等保、个人信息保护 |
 
 ### 16.2 阶段（每阶段开工前单独确认）
-- **Phase 0 地基（进行中）**：文档入库与检查入口（完成）、YANG 单一制品（完成：`net.salasim:salasim-yang:1.0.0-SNAPSHOT`，修订统一为 2026-10-06，各仓库拷贝与 sync 脚本已删除；镜像构建未验证）、YANG-push spike（完成，`yang-push-design.md`，用户决定见其 §11）、ACTN 抽象拓扑分析（进行中，`actn-abstract-topology-analysis.md`）、CI 接入。
+- **Phase 0 地基（进行中）**：文档入库与检查入口（完成）、YANG 单一制品（完成：`net.salasim:salasim-yang:1.0.0-SNAPSHOT`，修订统一为 2026-10-06，各仓库拷贝与 sync 脚本已删除；镜像构建未验证）、YANG-push spike（完成，`yang-push-design.md`，用户决定见其 §11）、ACTN 抽象拓扑分析（完成，`actn-abstract-topology-analysis.md`，决定见其 §5；Phase 1 总估算约 55–84 agent-day 中的网络部分）、CI 接入。
 - **Phase 1 网络内核收敛到单一路径**：删除已被替代的旧路径；类型化运行启动 + MDSC/PNC 两级 NETCONF 事务；YANG-push 实现（SBI 与 MPI）；PNC 抽象拓扑与 Parent PCE 改用抽象拓扑。
 - **Phase A 首次集群验证与复用可行性**：在 169 上跑当前形态，R20/R36 对照；spike：①节点与场景解耦（槽位的逻辑身份与链路经 NETCONF 配置和清空）②PCE 动态域归属 ③`reset-run` + 校验清单在 PCE 与节点上的实现与切换耗时 ④节点分片寻址与静态状态 ⑤Kueue 虚拟资源配额；产出资源模型初版。
 - **Phase 2 可复用实验床**：与场景无关的节点与 PCE；`reset-run` 与校验；运行驱动从 Backend 剥离（故障调度、封存、会话 API）；JetStream + Postgres/Timescale（W4）；删除时钟暂停与推帧（W3）；任务清单与种子规范；跨复用次数一致性回归。
@@ -432,5 +432,5 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | O9 | 交互会话的空闲超时与最长时长 | 按套餐设定 |
 | O10 | 平台升级后旧镜像版本的重跑支持（保留旧池多久） | 保留一个小版本周期，之后标注"版本已变化" |
 | O11 | MDSC→PNC→设备两级事务的语义：PNC 的 confirmed-commit 是否在 MDSC 确认前对设备保持未确认、超时如何级联回滚 | Phase 1 设计时定 |
-| O12 | 抽象拓扑的形式（抽象链路全互联 / 连通矩阵 / 由子 PCE 按域计算）及 Parent PCE 的 SRLG、跨快照稳定窗、带宽、MIN_DELAY 如何在抽象拓扑上保持 | 待 `actn-abstract-topology-analysis.md` |
+| O12 | 抽象拓扑的形式与 Parent PCE 的改造 | **已定（2026-10-06）**：混合方案，k 近邻抽象链路引导 + 子 PCE 权威，见 `actn-abstract-topology-analysis.md` §5 |
 | O13 | 多出的 D+1 个 lighty 实例的资源开销与启动时间（影响规格单价与池容量） | Phase A 实测 |
