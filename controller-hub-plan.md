@@ -84,7 +84,7 @@ PCEP / RSVP-TE / JetStream 遥测：不变（遥测直达 Backend，不经控制
    - 未验证：Next.js 服务端代理对 SSE 长连接和大响应的表现；用户身份如何映射到控制器侧权限（NACM 之前，先由代理按租户限制路径）。
 3. 场景编译器为每个 emulator 和 PCE 生成 NETCONF 开关与凭据（k8s Secret，`NODE_NETCONF_SSH_PASSWORD`），默认只开 SSH，不开 TCP。
 4. 控制器启动时按部署清单自动挂载所有 emulator/PCE，掉线自动重挂。
-5. 同步 YANG：`scripts/sync-yang.sh`，并加 CI 检查三个仓库的 YANG 副本一致。
+5. YANG：各仓库依赖单一制品 `net.salasim:salasim-yang`（见 `rebaseline-2026-10-06.md` R3），不再拷贝。
 - **验收**：169 上 7 节点部署，控制器挂载全部设备，读取每个设备配置成功；记录控制器和每个 emulator 的内存/线程/CPU；控制器重启后自动恢复挂载。
 - **回退**：不启用控制器，系统行为与现在完全一致。
 
