@@ -298,7 +298,19 @@ emulator 的发布路径与 `InterfaceNames`；控制器 relay 的 5277 订阅�
 | R-9 | 同一个 `DOMDataTreeChangeListener` 在大事务批次里的内存/时延未做压测（10k 设备、每设备一个订阅，不是单设备高频）| 低 | 订阅者数 = 控制器数，量很小；S6 做时延基线（现 1–2 ms）|
 | R-10 | 库的 `netconf-state` 提交冲突日志（`Conflicting modification … netconf-state`）在基线测试里就出现，未调查，与本工作无关 | 低 | 另行处理 |
 
-## 11. 需要用户决定（D1–D6）
+## 11. 用户决定（2026-10-06，已定）
+
+- 按 23–35 agent-day 的估算**继续实施** YANG-push（不退回自定义通知）。
+- **D1 = (b)**：设备→控制器标准 YANG-push，控制器→PCE 类型化 `report-link-state` RPC；登记 R2，迁移条件：PCE 获得 NETCONF 客户端时改 (a)。
+- **D2 = 是**：实现最小 `periodic`。
+- **D3 = `physicalLinkId` + 方向后缀**。
+- **D4 = 采用"接口名 = tp-id"并登记 R2**；删除接口名中 `<type>:<a>|<b>` 的字符串编码。
+- **D5 = 暂不改**：`control-plane-lateness` 第一版保留 RFC 5277 流 `SALASIM`，登记 R2（理由：不在本次范围；迁移条件：YANG-push 发布方落地后单独评估改为 on-change）。S1 须核对同会话混用 5277/8639 的限制。
+- **D6 = 发布方空白绕过** + 哨兵测试 + 上报 yangtools。
+
+以下为决定前的选项说明，保留备查。
+
+### 11.1 决定前的选项（D1–D6）
 
 - **D1 PCE 如何拿到链路状态。** 推荐 **(b)**：设备→控制器标准 YANG-push，控制器→PCE 类型化 RPC，登记 R2（迁移条件：PCE 获得 NETCONF 客户端时改 (a)）。备选 (a) 多 10–13 agent-day。
 - **D2 是否实现 `periodic`。** 推荐 **是（最小，≈ 1 d）**：它是 `ietf-yang-push` 的基础功能，不实现就不符合 RFC；不需要订阅它的人可以不用。
