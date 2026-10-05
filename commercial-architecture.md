@@ -382,7 +382,7 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | 合规 | 无 | 备案、等保、个人信息保护 |
 
 ### 16.2 阶段（每阶段开工前单独确认）
-- **Phase 0 地基（进行中）**：文档入库与检查入口（完成）、YANG 单一制品（进行中）、YANG-push spike（进行中）、CI 接入。
+- **Phase 0 地基（进行中）**：文档入库与检查入口（完成）、YANG 单一制品（完成：`net.salasim:salasim-yang:1.0.0-SNAPSHOT`，修订统一为 2026-10-06，各仓库拷贝与 sync 脚本已删除；镜像构建未验证）、YANG-push spike（进行中）、CI 接入。
 - **Phase 1 网络内核收敛到单一路径**：删除已被替代的旧路径；类型化运行启动 + 控制器 NETCONF 事务；YANG-push 实现。
 - **Phase A 首次集群验证与复用可行性**：在 169 上跑当前形态，R20/R36 对照；spike：①节点与场景解耦（槽位的逻辑身份与链路经 NETCONF 配置和清空）②PCE 动态域归属 ③`reset-run` + 校验清单在 PCE 与节点上的实现与切换耗时 ④节点分片寻址与静态状态 ⑤Kueue 虚拟资源配额；产出资源模型初版。
 - **Phase 2 可复用实验床**：与场景无关的节点与 PCE；`reset-run` 与校验；运行驱动从 Backend 剥离（故障调度、封存、会话 API）；JetStream + Postgres/Timescale（W4）；删除时钟暂停与推帧（W3）；任务清单与种子规范；跨复用次数一致性回归。
