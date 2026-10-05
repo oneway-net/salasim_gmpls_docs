@@ -1,0 +1,42 @@
+CASE valid
+  -> <rpc-reply  message-id="1"><rpc-reply/></rpc-reply>
+CASE unknown leaf in routing-search
+  -> EXCEPTION [tag=malformed-message type=PROTOCOL sev=ERROR] NetconfDocumentedException: Error parsing input:  Schema for node with name bogus-knob and namespace urn:salasim:pce-run does not exist in parent RegularCont
+CASE unknown top-level leaf
+  -> EXCEPTION [tag=malformed-message type=PROTOCOL sev=ERROR] NetconfDocumentedException: Error parsing input:  Schema for node with name serviceType and namespace urn:salasim:pce-run does not exist in parent DeclaredIn
+CASE out-of-range (uint8 bundle 40 -> use result-slice 0)
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE bad pattern digest
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE bad enum
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE bad identifier
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE out-of-range uint8 (compute-parallelism 200)
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE range 0..max: transient initial-delay-slices 0
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE missing mandatory run-id
+  -> <rpc-reply  message-id="10"><rpc-reply/></rpc-reply>
+CASE missing mandatory leaf deep (compute-timeout-ms)
+  -> <rpc-reply  message-id="11"><rpc-reply/></rpc-reply>
+CASE missing mandatory choice (no runtime config)
+  -> <rpc-reply  message-id="12"><rpc-reply/></rpc-reply>
+CASE missing frame-schedule
+  -> <rpc-reply  message-id="13"><rpc-reply/></rpc-reply>
+CASE frame-schedule empty (no schedule-file)
+  -> <rpc-reply  message-id="14"><rpc-reply/></rpc-reply>
+CASE must violated: max precompute > max reactive
+  -> <rpc-reply  message-id="15"><rpc-reply/></rpc-reply>
+CASE must violated in range: transient max-delay 1 < initial 5
+  -> <rpc-reply  message-id="16"><rpc-reply/></rpc-reply>
+CASE duplicate leaf
+  -> EXCEPTION [tag=malformed-message type=PROTOCOL sev=ERROR] NetconfDocumentedException: Error parsing input:  Duplicate element "compute-timeout-ms" in namespace "urn:salasim:pce-run" with parent "RegularContainerEffe
+CASE uint64 as number 0
+  -> <rpc-reply  message-id="18"><rpc-reply/></rpc-reply>
+CASE not a number
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE must violated: maximum-delay < initial
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 
+CASE both choice cases
+  -> EXCEPTION [tag=operation-failed type=APPLICATION sev=ERROR] DocumentedException: Unexpected error <- 

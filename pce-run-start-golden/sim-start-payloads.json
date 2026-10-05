@@ -1,0 +1,219 @@
+[
+ {
+  "url": "http://pce-sat-1.dep-golden-sat-1.svc.cluster.local:8082/api/v1/sim/start",
+  "body": {
+   "runId": "dep-golden-run-1783143780000",
+   "simulatorRunId": "simrun-0123456789ab",
+   "deploymentId": "dep-golden",
+   "domainId": "sat-1",
+   "statisticsBackendUrl": "http://backend.salasim:30081",
+   "statisticsNatsUrl": "nats://nats.dep-golden-core.svc.cluster.local:4222",
+   "internalToken": "",
+   "wallAnchorMs": 1783143780000,
+   "simAnchorMs": "2026-07-04T05:43:00Z",
+   "speedup": 0.0,
+   "inventoryCapacity": 8,
+   "resultSliceCount": 20,
+   "topologyFrameCount": 24,
+   "horizonSimTimeMs": 1783149780000,
+   "routingConfig": {
+    "constraints": {
+     "missingBandwidthPolicy": "REJECT",
+     "missingTeDataPolicy": "REJECT",
+     "unsupportedEndpointPolicy": "REJECT"
+    }
+   },
+   "runRuntimeConfig": {
+    "schemaVersion": 1,
+    "configDigest": "sha256:d4327dc7dd0a36f2b77246606715a113b0626e0f6ac1c22d7a33f2f2f6c036b4",
+    "role": "domain",
+    "routingSearch": {
+     "computeTimeoutMs": 16000,
+     "boundarySearchStrategy": "FULL_COST",
+     "maxChildRequestCountPerTunnel": 96,
+     "maxPrecomputeChildRequestCountPerTunnel": 48,
+     "maxCandidatePathCount": 64,
+     "postSuccessLookahead": 3
+    },
+    "recovery": {
+     "transient": {
+      "initialDelaySlices": 1,
+      "initialDelayRounds": 1,
+      "maximumDelaySlices": 4
+     },
+     "structural": {
+      "initialDelaySlices": 2,
+      "initialDelayRounds": 1,
+      "maximumDelaySlices": 8
+     }
+    },
+    "precomputation": {
+     "enabled": false,
+     "applyEnabled": false,
+     "futurePcreqTimeoutMs": 120000,
+     "cacheRetentionSlices": 1,
+     "pcreqBundleSize": 32,
+     "hysteresisMinHopImprovement": 0,
+     "transientLinkPenalty": 1000.0,
+     "stabilityWindowFrames": 3,
+     "computeParallelism": 8,
+     "computeQueueCapacity": 256,
+     "applyParallelism": 8,
+     "applyQueueCapacity": 512
+    }
+   },
+   "endToEndReuse": {
+    "enabled": false,
+    "selectionMode": "SEEDED_RANDOM",
+    "randomSeed": 3600603,
+    "retainRatio": 0.5,
+    "maxIdleEntries": 64,
+    "retainTtlSlices": 4,
+    "maxIdleBandwidthBps": 0,
+    "countIdleAgainstCapacity": true,
+    "bandwidthMatch": "EXACT",
+    "objectiveMatch": "STRICT",
+    "idleReuseForRecovery": true
+   },
+   "frames": [
+    {
+     "schemaVersion": 1,
+     "kind": "full",
+     "index": 0,
+     "simTime": "2026-07-04T05:43:00Z",
+     "topology": {
+      "nodes": [],
+      "links": []
+     }
+    }
+   ],
+   "frameSchedule": {
+    "version": 1,
+    "scheduleFile": "/var/salasim/scenario-artifacts/runtime/schedules/topology-schedule.json",
+    "runtimeDir": "/var/salasim/scenario-artifacts/runtime",
+    "runId": "dep-golden-run-1783143780000",
+    "domainId": "sat-1",
+    "networkOverrides": {
+     "islBandwidthBps": 400000000000,
+     "gslBandwidthBps": 400000000000,
+     "fiberBandwidthBps": 400000000000
+    }
+   },
+   "serviceType": "pce"
+  }
+ },
+ {
+  "url": "http://parent-pce.dep-golden-core.svc.cluster.local:8082/api/v1/sim/start",
+  "body": {
+   "runId": "dep-golden-run-1783143780000",
+   "simulatorRunId": "simrun-0123456789ab",
+   "deploymentId": "dep-golden",
+   "domainId": "core",
+   "statisticsBackendUrl": "http://backend.salasim:30081",
+   "statisticsNatsUrl": "nats://nats.dep-golden-core.svc.cluster.local:4222",
+   "internalToken": "",
+   "wallAnchorMs": 1783143780000,
+   "simAnchorMs": "2026-07-04T05:43:00Z",
+   "speedup": 0.0,
+   "inventoryCapacity": 8,
+   "resultSliceCount": 20,
+   "topologyFrameCount": 24,
+   "horizonSimTimeMs": 1783149780000,
+   "routingConfig": {
+    "constraints": {
+     "missingBandwidthPolicy": "REJECT",
+     "missingTeDataPolicy": "REJECT",
+     "unsupportedEndpointPolicy": "REJECT"
+    }
+   },
+   "runRuntimeConfig": {
+    "schemaVersion": 1,
+    "configDigest": "sha256:d4327dc7dd0a36f2b77246606715a113b0626e0f6ac1c22d7a33f2f2f6c036b4",
+    "role": "parent",
+    "routingSearch": {
+     "computeTimeoutMs": 16000,
+     "boundarySearchStrategy": "FULL_COST",
+     "maxChildRequestCountPerTunnel": 96,
+     "maxPrecomputeChildRequestCountPerTunnel": 48,
+     "maxCandidatePathCount": 64,
+     "postSuccessLookahead": 3
+    },
+    "recovery": {
+     "transient": {
+      "initialDelaySlices": 1,
+      "initialDelayRounds": 1,
+      "maximumDelaySlices": 4
+     },
+     "structural": {
+      "initialDelaySlices": 2,
+      "initialDelayRounds": 1,
+      "maximumDelaySlices": 8
+     },
+     "compensation": {
+      "initialDelaySlices": 1,
+      "initialDelayRounds": 2,
+      "maximumDelaySlices": 4,
+      "evidenceBoundAfterAttempts": 3
+     },
+     "capacityContention": {
+      "maximumAttemptsPerSlice": 3,
+      "cooldownMs": 2000
+     },
+     "outageRecovery": {
+      "maximumAttemptsPerSlice": 2,
+      "cooldownMs": 10000,
+      "protectedPacedRetryCooldownMs": 10000
+     }
+    },
+    "precomputation": {
+     "enabled": false,
+     "applyEnabled": false,
+     "stabilityWindowFrames": 3,
+     "workerCount": 48,
+     "impactCoalescingMs": 1000,
+     "passDeadlineMs": 80000,
+     "deadlineSafetyMs": 10000,
+     "perLspBudgetMs": 8000
+    }
+   },
+   "endToEndReuse": {
+    "enabled": false,
+    "selectionMode": "SEEDED_RANDOM",
+    "randomSeed": 3600603,
+    "retainRatio": 0.5,
+    "maxIdleEntries": 64,
+    "retainTtlSlices": 4,
+    "maxIdleBandwidthBps": 0,
+    "countIdleAgainstCapacity": true,
+    "bandwidthMatch": "EXACT",
+    "objectiveMatch": "STRICT",
+    "idleReuseForRecovery": true
+   },
+   "frames": [
+    {
+     "schemaVersion": 1,
+     "kind": "full",
+     "index": 0,
+     "simTime": "2026-07-04T05:43:00Z",
+     "topology": {
+      "nodes": [],
+      "links": []
+     }
+    }
+   ],
+   "frameSchedule": {
+    "version": 1,
+    "scheduleFile": "/var/salasim/scenario-artifacts/runtime/schedules/parent-schedule.json",
+    "runtimeDir": "/var/salasim/scenario-artifacts/runtime",
+    "runId": "dep-golden-run-1783143780000",
+    "domainId": "core",
+    "networkOverrides": {
+     "islBandwidthBps": 400000000000,
+     "gslBandwidthBps": 400000000000,
+     "fiberBandwidthBps": 400000000000
+    }
+   },
+   "serviceType": "pce"
+  }
+ }
+]

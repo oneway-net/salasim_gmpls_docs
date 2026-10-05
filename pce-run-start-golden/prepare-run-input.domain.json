@@ -1,0 +1,69 @@
+{
+ "run-id": "dep-golden-run-1783143780000",
+ "simulator-run-id": "simrun-0123456789ab",
+ "deployment-id": "dep-golden",
+ "domain-id": "sat-1",
+ "sim-anchor-time": "2026-07-04T05:43:00.000Z",
+ "result-slice-count": 20,
+ "horizon-sim-time": "2026-07-04T07:23:00.000Z",
+ "inventory-capacity": 8,
+ "statistics-transport": {
+  "backend-url": "http://backend.salasim:30081",
+  "nats-url": "nats://nats.dep-golden-core.svc.cluster.local:4222"
+ },
+ "end-to-end-reuse": {
+  "enabled": false,
+  "selection-mode": "SEEDED_RANDOM",
+  "random-seed": 3600603,
+  "retain-ratio": "0.5",
+  "max-idle-entries": 64,
+  "retain-ttl-slices": 4,
+  "max-idle-bandwidth-bps": "0",
+  "bandwidth-match": "EXACT",
+  "objective-match": "STRICT",
+  "idle-reuse-for-recovery": true
+ },
+ "frame-schedule": {
+  "schedule-file": "/var/salasim/scenario-artifacts/runtime/schedules/topology-schedule.json",
+  "runtime-dir": "/var/salasim/scenario-artifacts/runtime",
+  "network-overrides": {
+   "isl-bandwidth-bps": "400000000000",
+   "gsl-bandwidth-bps": "400000000000",
+   "fiber-bandwidth-bps": "400000000000"
+  }
+ },
+ "domain-runtime-config": {
+  "config-digest": "sha256:d4327dc7dd0a36f2b77246606715a113b0626e0f6ac1c22d7a33f2f2f6c036b4",
+  "routing-search": {
+   "compute-timeout-ms": "16000",
+   "boundary-search-strategy": "FULL_COST",
+   "max-child-request-count-per-tunnel": 96,
+   "max-precompute-child-request-count-per-tunnel": 48,
+   "max-candidate-path-count": 64,
+   "post-success-lookahead": 3
+  },
+  "recovery": {
+   "transient": {
+    "initial-delay-slices": 1,
+    "initial-delay-rounds": 1,
+    "maximum-delay-slices": 4
+   },
+   "structural": {
+    "initial-delay-slices": 2,
+    "initial-delay-rounds": 1,
+    "maximum-delay-slices": 8
+   }
+  },
+  "precomputation": {
+   "enabled": false,
+   "apply-enabled": false,
+   "cache-retention-slices": 1,
+   "hysteresis-min-hop-improvement": 0,
+   "stability-window-frames": 3,
+   "compute-parallelism": 8,
+   "compute-queue-capacity": 256,
+   "apply-parallelism": 8,
+   "apply-queue-capacity": 512
+  }
+ }
+}
