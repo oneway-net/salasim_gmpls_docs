@@ -717,7 +717,7 @@ O11 的语义写死如下。
 
 | 步骤 | 状态 | 提交 | 备注（实测数字、偏差） |
 |---|---|---|---|
-| A0 | 待办 | | |
+| A0 | 完成（本地） | netconf e47756e；pce 40eb90d；emulator f1d7339；backend 36dec2a | 偏差：`enabled` 开关在共享库 `ListenerConfig` 里，所以先改库再改 PCE/emulator（构造器少一个参数）。controller 自身的 `salasim.controller.netconf.enabled` 属于 C1，未动。没有覆盖丢失：观测故障路径新增 `ObservedFaultReprojectionTest`。全量：PCE 1473 个，22 个错误全是沙箱（socket/临时文件）；backend 2243 通过，2 个 `test_update_cluster_and_test_script` 失败，改动前同样失败；emulator 全绿 |
 | A1 | 待办 | | |
 | A2 | 待办 | | |
 | A3 | 待办 | | |
