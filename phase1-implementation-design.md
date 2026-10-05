@@ -718,7 +718,7 @@ O11 的语义写死如下。
 | 步骤 | 状态 | 提交 | 备注（实测数字、偏差） |
 |---|---|---|---|
 | A0 | 完成（本地） | netconf e47756e；pce 40eb90d；emulator f1d7339；backend 36dec2a | 偏差：`enabled` 开关在共享库 `ListenerConfig` 里，所以先改库再改 PCE/emulator（构造器少一个参数）。controller 自身的 `salasim.controller.netconf.enabled` 属于 C1，未动。没有覆盖丢失：观测故障路径新增 `ObservedFaultReprojectionTest`。全量：PCE 1473 个，22 个错误全是沙箱（socket/临时文件）；backend 2243 通过，2 个 `test_update_cluster_and_test_script` 失败，改动前同样失败；emulator 全绿 |
-| A1 | 待办 | | |
+| A1 | 完成（本地） | netconf（见 git log） | 新增 `OperationFactoryHookTest`：不加 chain 时稳定复现 OptimisticLock（4 线程×50 次并发 publish），加 chain 后通过。库自带测试里已不再能复现该日志，所以用并发突发测试作为证明。PCE `PceNetconfManagementTest` 连跑 50 次 0 失败。spike 的 `run.sh` 改为固定在基线 b6b2f83（补丁基于它），没有归档，D1 还要复用其源码 |
 | A2 | 待办 | | |
 | A3 | 待办 | | |
 | B1 | 待办 | | |

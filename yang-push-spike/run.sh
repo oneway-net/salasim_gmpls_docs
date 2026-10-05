@@ -17,8 +17,9 @@ WORK="${WORK:-${TMPDIR:-/tmp}/yang-push-spike-work}"
 export MAVEN_OPTS="-Djava.io.tmpdir=$WORK"
 
 rm -rf "$WORK"; mkdir -p "$WORK/lib"
-# the COMMITTED baseline (HEAD b6b2f83), not the working tree: Phase 0.2 is rewriting the library's build/YANG handling
-git -C "$ROOT/salasim_gmpls_netconf" archive HEAD | tar -x -C "$WORK/lib"
+# the pinned baseline b6b2f83 (before the library gained addOperationServiceFactory, which the patch below adds):
+# the spike stays reproducible however the library evolves. The hook itself has since landed in the library (A1).
+git -C "$ROOT/salasim_gmpls_netconf" archive b6b2f83 | tar -x -C "$WORK/lib"
 cd "$WORK/lib"
 patch -p0 src/main/java/net/salasim/netconf/mgmt/NetconfManagementServer.java < "$SPIKE/netconf-server-hook.patch"
 mkdir -p src/main/java/net/salasim/netconf/mgmt/yangpush src/test/java/net/salasim/netconf/mgmt/yangpush
