@@ -4,6 +4,8 @@
 依据：`docs/rebaseline-2026-10-06.md` §5、§6。决定 2（强制 YANG-push）按已定执行，本文不推荐回退到自定义通知；
 工作量大时给出数字和"最便宜的符合标准的子集"。
 
+> **修订（2026-10-06）**：用户改为严格 ACTN（总纲 D-C8）：每套实验床一个 MDSC + 每域一个 PNC。本文中"控制器"在 SBI 一侧读作 **PNC**（订阅本域节点、按 D1 转报本域 Domain PCE、拥有本域拓扑实例）；新增 MPI 一侧：PNC 作为 NETCONF 服务端以 YANG-push 向 MDSC 发布本域**抽象** te-topology，MDSC 转报 Parent PCE 域间链路。§6 的估算只覆盖单控制器，修订后的估算见 `actn-abstract-topology-analysis.md`。
+
 ## 0. 结论（一页）
 
 1. **ODL netconf 11.0.0 / lighty 24.0.0 没有任何 RFC 8641（YANG-push）实现，也没有可复用于 NETCONF 的 RFC 8639 服务端。**
@@ -163,7 +165,7 @@ augment "/if:interfaces/if:interface" {          // salasim-fault, config false
 
 ### 3.5 谁拥有拓扑实例
 
-控制器（ACTN 的 MDSC）。理由：控制器已经是每租户一个、持有全部设备挂载；RFC 8795 的 te-topology 本来就是 MDSC 对 PNC 的接口；
+（2026-10-06 修订：本域拓扑实例由 PNC 拥有，MDSC 拥有由各 PNC 抽象拓扑组合的多域拓扑；以下为单控制器时的原文。）控制器（ACTN 的 MDSC）。理由：控制器已经是每租户一个、持有全部设备挂载；RFC 8795 的 te-topology 本来就是 MDSC 对 PNC 的接口；
 设备（emulator）不应也无法知道网络级的 link-id。实例来自运行的拓扑快照/调度（backend 编译器已持有 `nodes.json`、链路表），
 在部署时由 backend 经控制器 RESTCONF（RFC 8040）以 `ietf-network`/`te-topology` 的**配置数据**写入（RFC 8345 的 node/tp/link 是
 `config true`）。**随帧变化的链路（GSL 切换）**：TP 是稳定的（每个卫星固定数量的终端），link 随帧由 backend 增删——这部分与"类型化运行启动"

@@ -41,17 +41,18 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
 | D-S3 | 基础设施 | 国内公有云托管 Kubernetes（ACK / CCE / TKE 任选），**一个集群**承载管理面和全部实验床；架构保持云中立 |
 | D-S4 | 任务形态 | 批处理为主（提交时场景、故障计划、种子全部定死），兼顾交互会话（可暂停、手动注入故障、实时视图，按占用时长计费） |
 | D-S5 | 实验床复用 | **常驻实验床池，时分复用**：同一时刻一套实验床只服务一个任务；提供小、中、大等多种规格的池，任务分配到恰好够用的规格；不做空分复用 |
-| D-S6 | 任务间清理 | 控制器对全部 PCE 和节点做 `reset-run` 事务，再逐项校验状态为空；校验不过则重启容器进程（pod 不重新调度），仍不过则销毁重建该实验床 |
+| D-S6 | 任务间清理 | MDSC 对 Parent PCE 和各 PNC 做 `reset-run` 事务（各 PNC 再对本域 PCE 和节点执行），再逐项校验状态为空；校验不过则重启容器进程（pod 不重新调度），仍不过则销毁重建该实验床 |
 | D-S7 | 计费模式 | 套餐（决定并发、规格上限、数据保留、可用功能）+ 预付积分按量扣；提交前估价、可设上限、不欠费 |
 | D-S8 | 计费系统 | 开源计费引擎（Lago：价目、套餐、用量汇总、账单）+ 自建积分账本（Postgres 复式记账，余额与冻结的唯一权威，与提交同事务）；支付宝/微信支付经官方 SDK 充值 |
 | D-S9 | 注册与身份 | 手机号短信验证注册即可用免费额度；充值或开发票前做个人或企业认证；支持组织、邀请成员、角色 |
 | D-S10 | 失败计费 | 平台原因（组件故障、资源受限、基础设施）不收费并全额解冻；用户原因（配置不可行、主动取消、预算耗尽）按实际用量；归因可审计、可申诉，无法判定时按平台原因处理 |
 | D-C2 | 生命周期 | Kubernetes Operator + CRD（推翻此前"不写 Operator"） |
-| D-C3 | 编排 | 控制器内的 NETCONF 事务（candidate + confirmed-commit），不引入工作流引擎 |
+| D-C3 | 编排 | 控制器内的 NETCONF 事务（candidate + confirmed-commit），MDSC 跨 PNC、PNC 跨设备两级嵌套（§18 O11），不引入工作流引擎 |
 | D-C4 | 存储 | JetStream + PostgreSQL/Timescale，替换全部 SQLite |
-| D-C5 | 授权 | 统一网关做 OIDC 认证；平台 API 按组织角色授权；实验床控制器 RESTCONF 用 NACM，按租约授予和收回；服务间 mTLS |
+| D-C5 | 授权 | 统一网关做 OIDC 认证；平台 API 按组织角色授权；实验床 MDSC 的 RESTCONF 用 NACM，按租约授予和收回；服务间 mTLS |
 | D-C6 | 节点粒度 | 分片：一个 pod 承载多个节点槽位，每个节点仍是独立协议实例和独立 NETCONF 端点 |
 | D-C7 | 高可用 | 管理面 HA；实验床内组件故障使当前任务失败（不收费），实验床进入回收流程 |
+| D-C8 | 控制器分层 | **严格 ACTN（RFC 8453）**：每套实验床一个 MDSC（lighty）与 Parent PCE 同 pod，每个域一个 PNC（lighty）与该域 Domain PCE 同 pod（两个容器、各自 JVM）。CMI = RESTCONF（运行驱动、用户 → MDSC）；MPI = NETCONF + YANG-push（MDSC 挂载各 PNC，PNC 北向经 `salasim_gmpls_netconf` 暴露 ietf-te-topology / ietf-te，**抽象拓扑**：边界节点 + 抽象链路）；SBI = NETCONF + YANG-push（PNC 挂载本域节点）。业务开通：单域 MDSC → PNC → Domain PCE，跨域 MDSC → Parent PCE（PCEP H-PCE 不变） |
 
 继续有效的既有决定：故障模型为"控制面下发故障 + 设备通知"（无 BFD、无节点间 OSPF 邻接，OSPF-TE 为可选保真模式）；链路状态用 YANG-push（RFC 8639/8641）；PCE 启动参数完整 YANG 建模、绑定生成类；PCE 已有的 prepare / commit / reset / release-run-on-pces 成为租约生命周期的基础；业务展开在 PCE、批量 RPC、有序指标列表；speedup ≥ 0.01，开启 OSPF-TE 时 speedup = 1。
 
@@ -89,8 +90,10 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
  │  规格 L 池: ...                                                            │
  │                                                                            │
  │  每套实验床（一个命名空间 tb-<id>）：                                         │
- │   运行驱动 ──RESTCONF──▶ 控制器（lighty）──NETCONF 事务 / YANG-push──┐        │
- │                               Parent PCE ──PCEP── Domain PCE ×D ──PCEP── 节点分片 ×M（N 个槽位） │
+ │   运行驱动 ──RESTCONF(CMI)──▶ [MDSC + Parent PCE]                            │
+ │                     MPI: NETCONF / YANG-push │ 抽象 te-topology、ietf-te       │
+ │                      [PNC + Domain PCE] ×D ──SBI: NETCONF / YANG-push── 本域节点分片 │
+ │   控制面不变：Parent PCE ──PCEP── Domain PCE ──PCEP/RSVP-TE── 节点            │
  └────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -174,9 +177,9 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
 ### 5.2 组成（每套实验床一个命名空间 `tb-<id>`）
 | 组件 | 职责 |
 |---|---|
-| 运行驱动（Python，单副本） | 每次一个运行：调控制器 `prepare/start-run`；按计划到期下发故障（批处理）；交互会话 API（暂停、恢复、手动注入故障、实时视图）；封存判定（ledger 流追平 + 各组件结束标记）；写回状态。运行状态只在内存，重置时清空 |
-| 控制器（lighty.io） | 设备挂载（槽位清单来自 `Testbed`）、NETCONF 事务、故障翻译、YANG-push 订阅并报告 PCE、NACM（按租约授予与收回） |
-| Parent PCE / Domain PCE ×D | 按运行配置决定启用几个域；未启用的域 PCE 保持空闲 |
+| 运行驱动（Python，单副本） | 每次一个运行：调 MDSC `prepare/start-run`；按计划到期下发故障（批处理）；交互会话 API（暂停、恢复、手动注入故障、实时视图）；封存判定（ledger 流追平 + 各组件结束标记）；写回状态。运行状态只在内存，重置时清空 |
+| MDSC（lighty.io）+ Parent PCE，同一 pod | MDSC：挂载 Parent PCE 与各 PNC、跨 PNC 事务、多域拓扑（由各 PNC 的抽象拓扑组合）、业务分派（单域给 PNC，跨域给 Parent PCE）、故障下发到相关 PNC、域间链路状态转报 Parent PCE、NACM（按租约授予与收回）。Parent PCE：跨域计算（PCEP H-PCE） |
+| PNC（lighty.io）+ Domain PCE，每域一个 pod | PNC：挂载本域节点（槽位清单来自 `Testbed`）、本域设备事务、故障翻译、订阅节点 YANG-push 并转报 Domain PCE、计算并以 YANG-push 向 MDSC 发布本域抽象拓扑。Domain PCE：域内计算。按运行配置决定启用几个域；未启用的域整 pod 保持空闲 |
 | 节点分片 ×M（共 N 个槽位） | 每个槽位是一个与场景无关的节点实例；身份（节点 ID、router-id、链路、所属域与 PCE 地址）在 prepare 时经 NETCONF 下发 |
 
 前提改造（Phase A spike）：
@@ -196,8 +199,8 @@ Ready ──绑定租约──▶ Leased(prepare → run → seal) ──▶ Res
                                                Recycling（销毁重建）→ Ready
 ```
 - **绑定前**：再做一次健康与空状态校验，不通过则换一套实验床并把这套送去回收。
-- **重置**：控制器对全部 PCE 和节点执行 `reset-run` 事务（清除 LSP、PCEP 有状态数据、TED、故障配置、节点逻辑身份与链路、YANG-push 订阅）；运行驱动清空内存状态；收回本次运行的 NACM 授权与 JetStream 凭据。
-- **校验清单**（每项都要可机器判定）：PCE 中 LSP 数与报告数为 0、TED 为空、无挂起的计算任务；节点无逻辑身份与 RSVP 状态、无故障配置；PCEP 与 NETCONF 会话健康；控制器无运行期配置、NACM 无组织授权；各组件时钟处于未锚定状态；实验床内没有持久卷写入（事实全部走 JetStream，不在实验床落盘）。
+- **重置**：MDSC 经各 PNC 对全部 PCE 和节点执行 `reset-run` 事务（含 MDSC 与 PNC 自身的运行期配置与多域/抽象拓扑）（清除 LSP、PCEP 有状态数据、TED、故障配置、节点逻辑身份与链路、YANG-push 订阅）；运行驱动清空内存状态；收回本次运行的 NACM 授权与 JetStream 凭据。
+- **校验清单**（每项都要可机器判定）：PCE 中 LSP 数与报告数为 0、TED 为空、无挂起的计算任务；节点无逻辑身份与 RSVP 状态、无故障配置；PCEP 与 NETCONF 会话（SBI 与 MPI）健康；MDSC 与各 PNC 无运行期配置和拓扑实例、NACM 无组织授权；各组件时钟处于未锚定状态；实验床内没有持久卷写入（事实全部走 JetStream，不在实验床落盘）。
 - **进程重启**：通过 NETCONF RPC 让组件进程退出，由 kubelet 原地重启容器（不重新调度、不重新拉镜像），再校验。
 - **回收**：仍不通过就删除命名空间并按池配置重建。
 - 重置、重启、回收的耗时与次数作为平台指标；它们不影响刚结束任务的计费，也不影响该任务的结果。
@@ -211,9 +214,9 @@ Ready ──绑定租约──▶ Leased(prepare → run → seal) ──▶ Res
 1. 用户选模板或私有场景、填参数 → 任务服务校验与编译（失败即返回，不收费）→ 得出所需规格与估价。
 2. 用户确认上限 → **一个事务**：写不可变任务清单 + 冻结上限积分 → 创建挂起的 `SimulationJob`。
 3. Kueue 按组织配额与公平共享排队 → 准入 → Operator 绑定一套 Ready 的实验床（租约生效，计量开始）→ 签发本次运行的凭据与授权。
-4. 运行驱动调控制器 `prepare-run`：一个 NETCONF 事务把运行配置写入全部启用的 PCE 与节点（lock → 写 candidate → validate → confirmed-commit），再下发统一时钟锚点 T0 并确认。任一失败全部回滚，任务以平台原因失败，实验床进入重置。
+4. 运行驱动调 MDSC `prepare-run`：一个 NETCONF 事务把运行配置写入 Parent PCE 与全部启用的 PNC，各 PNC 在其提交中再以本域事务写入 Domain PCE 与节点（lock → 写 candidate → validate → confirmed-commit，两级嵌套，§18 O11），再下发统一时钟锚点 T0 并确认。任一失败全部回滚，任务以平台原因失败，实验床进入重置。
 5. 各组件在 T0 按自己的时钟运行；时间表已预先下发，没有人推帧。
-6. 运行驱动按故障计划到期下发故障（控制器 → 两端节点 → 节点按仿真时刻生效 → YANG-push → 控制器 → PCE 时钟队列 → 重路由）；计划、下发、节点生效、PCE 生效四个时间记入事实。
+6. 运行驱动按故障计划到期下发故障（MDSC → 相关 PNC → 两端节点 → 节点按仿真时刻生效 → YANG-push → PNC → Domain PCE 时钟队列 → 重路由；PNC 同时更新抽象拓扑并经 MPI YANG-push 报 MDSC，域间链路由 MDSC 转报 Parent PCE）；计划、下发、节点生效、PCE 生效四个时间记入事实。
 7. 累计用量将达上限时，按用户预设"到上限即停止"（用户预先授权的操作员动作，结果标"预算耗尽"）。
 8. 仿真时间到 → 运行驱动等事实追平并封存 → 租约结束（计量停止）→ 实验床进入重置与校验 → 计量出最终用量 → 账本结算 → 通知用户。
 
@@ -264,7 +267,7 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | `USER_INFEASIBLE` | 运行中由场景本身导致、且清单声明的终止条件成立的终止 | 按实际用量 |
 | `USER_CANCELLED` | 用户主动停止 | 按实际用量 |
 | `USER_BUDGET` | 达到预算上限 | 按实际用量（不超过上限） |
-| `PLATFORM_COMPONENT` | 控制器/PCE/节点/运行驱动崩溃、prepare 事务失败 | 不收费 |
+| `PLATFORM_COMPONENT` | MDSC/PNC/PCE/节点/运行驱动崩溃、prepare 事务失败 | 不收费 |
 | `PLATFORM_RESOURCE` | CPU 节流超阈值、遥测降级、时钟偏差超 SLO | 不收费（结果可查看，标"质量不达标"） |
 | `PLATFORM_INFRA` | 节点丢失、云资源异常、Operator 超时 | 不收费 |
 | `UNKNOWN` | 证据不足 | 按平台原因处理并进入复核 |
@@ -336,7 +339,7 @@ API 组 `salasim.net`，`v1alpha1` 起。
 
 ## 13. 规模、资源模型与成本
 
-- 资源模型：每个规格的实验床资源（"基础 + 每域 PCE + 每节点槽位"的 CPU、内存）由 Phase A 实测得出。它同时用于三件事：池容量规划、提交前估价（规格单价）、Kueue 额度。三者用同一个模型。
+- 资源模型：每个规格的实验床资源（"基础（MDSC + Parent PCE + 运行驱动）+ 每域（PNC + Domain PCE）+ 每节点槽位"的 CPU、内存）由 Phase A 实测得出。它同时用于三件事：池容量规划、提交前估价（规格单价）、Kueue 额度。三者用同一个模型。
 - 并发上限 = 各规格池的实验床总数；平台利用率 = 租用时长 /（实验床总数 × 时间）。目标是通过池伸缩把空闲实验床控制在 `minReady` 附近。
 - 弹性：池扩容会新建实验床，由集群自动伸缩按需加节点；池缩容后节点空闲回收。管理面固定节点池；实验床节点池启用 CPU Manager static 策略。
 - 切换耗时（重置 + 校验）是复用效率的关键指标，Phase A 实测；目标是秒级，远小于新建实验床（调度 + 拉镜像 + JVM 启动 + 会话建立）。
@@ -375,15 +378,16 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | 运行驱动 | Backend 常驻、推帧、故障定时 | 实验床内的运行驱动，时间表预下发 |
 | 存储 | 多个 SQLite | Postgres/Timescale + JetStream |
 | 入口与授权 | Next.js 代理、控制器 mTLS 仅认证 | 网关 + OIDC + 组织角色 + 按租约 NACM + mTLS |
-| 运行启动 | HTTP `/sim/start` + 部分控制器 RPC | 控制器 NETCONF 事务 |
+| 运行启动 | HTTP `/sim/start` + 部分控制器 RPC | MDSC → PNC 两级 NETCONF 事务 |
+| 控制器 | 单个控制器（每租户） | 严格 ACTN：MDSC + 每域 PNC，MPI 抽象拓扑 |
 | 链路状态 | 自定义 `link-state-changed` | YANG-push |
 | 节点 | 一 JVM 一节点 | 分片 |
 | 真实集群验证 | 新架构从未上集群 | kind 冒烟每次合并；Phase A 首次验证 |
 | 合规 | 无 | 备案、等保、个人信息保护 |
 
 ### 16.2 阶段（每阶段开工前单独确认）
-- **Phase 0 地基（进行中）**：文档入库与检查入口（完成）、YANG 单一制品（完成：`net.salasim:salasim-yang:1.0.0-SNAPSHOT`，修订统一为 2026-10-06，各仓库拷贝与 sync 脚本已删除；镜像构建未验证）、YANG-push spike（进行中）、CI 接入。
-- **Phase 1 网络内核收敛到单一路径**：删除已被替代的旧路径；类型化运行启动 + 控制器 NETCONF 事务；YANG-push 实现。
+- **Phase 0 地基（进行中）**：文档入库与检查入口（完成）、YANG 单一制品（完成：`net.salasim:salasim-yang:1.0.0-SNAPSHOT`，修订统一为 2026-10-06，各仓库拷贝与 sync 脚本已删除；镜像构建未验证）、YANG-push spike（完成，`yang-push-design.md`，用户决定见其 §11）、ACTN 抽象拓扑分析（进行中，`actn-abstract-topology-analysis.md`）、CI 接入。
+- **Phase 1 网络内核收敛到单一路径**：删除已被替代的旧路径；类型化运行启动 + MDSC/PNC 两级 NETCONF 事务；YANG-push 实现（SBI 与 MPI）；PNC 抽象拓扑与 Parent PCE 改用抽象拓扑。
 - **Phase A 首次集群验证与复用可行性**：在 169 上跑当前形态，R20/R36 对照；spike：①节点与场景解耦（槽位的逻辑身份与链路经 NETCONF 配置和清空）②PCE 动态域归属 ③`reset-run` + 校验清单在 PCE 与节点上的实现与切换耗时 ④节点分片寻址与静态状态 ⑤Kueue 虚拟资源配额；产出资源模型初版。
 - **Phase 2 可复用实验床**：与场景无关的节点与 PCE；`reset-run` 与校验；运行驱动从 Backend 剥离（故障调度、封存、会话 API）；JetStream + Postgres/Timescale（W4）；删除时钟暂停与推帧（W3）；任务清单与种子规范；跨复用次数一致性回归。
 - **Phase 3 池与租约**：`TestbedPool`/`Testbed`/`SimulationJob` + Operator + Kueue；删除 runtime-deployer、kubectl_ops、controller_deploy、tenant_tls、按场景部署与常驻 Backend 驱动。
@@ -399,7 +403,8 @@ API 组 `salasim.net`，`v1alpha1` 起。
 |---|---|
 | 第一版 D-C1"私有化为主，兼顾 SaaS" | 取代：D-S1/D-S2/D-S3 |
 | 第二版"每个任务一套实验床，用完销毁" | 取代：D-S5/D-S6，常驻池时分复用 |
-| "控制器每租户一个"（controller-hub-plan、backend 32201c0） | 取代：每套实验床一个控制器，随租约服务不同任务；Phase 3 删除每租户部署代码 |
+| "控制器每租户一个"（controller-hub-plan、backend 32201c0） | 取代：每套实验床一个 MDSC + 每域一个 PNC（D-C8），随租约服务不同任务；Phase 3 删除每租户部署代码 |
+| v3 初稿"每套实验床一个控制器，Domain PCE = PNC" | 取代：D-C8 严格 ACTN（2026-10-06） |
 | 第一版的 `Tenant`、`Testbed`、`Run` CRD | 取代：`TestbedPool`、`Testbed`（含租约）、`SimulationJob` + 组织命名空间 + Kueue |
 | 按场景编译部署清单、节点配置部署时固定（`scenario_compiler.py` 的 StatefulSet 渲染） | 取代：编译只产出运行配置；部署由池按规格完成（Phase 2/3） |
 | 应用模型 B 中"每租户一个实验管理应用" | 修正：管理面共享任务服务 + 实验床内运行驱动 |
@@ -426,3 +431,6 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | O8 | 交互会话是否允许修改场景 | 不允许，只允许暂停、恢复、注入故障 |
 | O9 | 交互会话的空闲超时与最长时长 | 按套餐设定 |
 | O10 | 平台升级后旧镜像版本的重跑支持（保留旧池多久） | 保留一个小版本周期，之后标注"版本已变化" |
+| O11 | MDSC→PNC→设备两级事务的语义：PNC 的 confirmed-commit 是否在 MDSC 确认前对设备保持未确认、超时如何级联回滚 | Phase 1 设计时定 |
+| O12 | 抽象拓扑的形式（抽象链路全互联 / 连通矩阵 / 由子 PCE 按域计算）及 Parent PCE 的 SRLG、跨快照稳定窗、带宽、MIN_DELAY 如何在抽象拓扑上保持 | 待 `actn-abstract-topology-analysis.md` |
+| O13 | 多出的 D+1 个 lighty 实例的资源开销与启动时间（影响规格单价与池容量） | Phase A 实测 |
