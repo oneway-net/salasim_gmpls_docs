@@ -140,3 +140,14 @@ controller 仓库有进程内的端到端测试(`FullChainTest`/`ChainWorld`,真
 2. **`committing` 之后的恢复**:向前滚动(同 anchor 重发 commit),任何参与者不能 commit 则冻结并记 `failed`。
 3. **顺序**:先 M0+M1(特性测试 + 可观测性,不改事务语义),再做持久化(M2)。
 4. **范围**:本轮只做 MDSC 的恢复;PNC 先只做可见性(重启后 `run-status` 为 `unknown`、run 可见失败),PNC 的真正恢复(M3)之后再做。
+
+## 实施记录
+
+### M0+M1(2026-10-06/07,完成,本地)
+`RunStatus` 与 `run-status`(§11 #15)、MDSC/PNC 丢弃计数、Backend 轮询(`controller_run_health.py`:`unknown`/`failed`/run-id 不符/`dropped-reports` 增长时让 run 失败;`idle`/`aborted` 不算,因为 Stop 先 reset 控制器)。
+
+### M2(2026-10-07,完成,本地;只覆盖 MDSC)
+**做了**:`RunStateStore` 接口 + `FileRunStateStore`(临时文件、fsync、原子重命名;默认 `/app/data/run-record.json`,设置 `salasim.controller.mdsc.run-record-file`);`RunRecord`(run-id、phase、参与者、最后一次 commit 的锚点、计划故障);`RunRecorder`(`RunObserver`):prepare 与 commit 在发出之前写前落盘,**写不下去就拒绝该调用**(`operation-failed`,不启动一个重启后找不到的 run),达成后的更新是尽力而为;计划故障每次 `plan` 后更新记录(`PlannedFaults.onChange`);`MdscRecovery`:启动时按 §2.3 恢复——preparing/prepared 推定中止(对参与者 reset,`aborted` + `aborted-by-recovery`)、committing 向前滚动(恢复内存后重发同一 commit,失败则冻结并 `failed`)、running 恢复 reporter/时钟/计划故障并继续。PNC 还没挂载好时返回 `RETRY` 且记录不动,守护线程每 2 s 重试、最多 120 s,之后 `failed` + `participant-unreachable`。
+**偏差**:(1) 设计写的是 `run-record` YANG 容器;实际是 MDSC 私有的 JSON(带 version),没有新增 YANG,因为它不是接口,不需要登记。(2) 没有记录时状态保持 `unknown`,不置 `idle`:卷丢失的重启仍能与"从没跑过"区分(Backend 对 `unknown` 会让活动 run 失败)。(3) 新增 `recovering` 相位与 `evidence-incomplete`(§11 #15 已更新):`running` 恢复**不补发**崩溃时内存队列里的报告(§2.5 的"让缺口可见"那一半),Backend 目前**不**因 `evidence-incomplete` 让 run 失败,也还没把它写进 run 摘要(待做)。(4) 恢复时 reporter 的基线是 PNC 现在发布的状态,不是 Parent 已知的状态:停机期间发生的变化不会补报(同上,属于 M3 的全量重放)。
+**测试**:`MdscRestartTest` 8 个(含 prepared→aborted、running→resumed 且故障仍被解释且 `droppedReports==0`、committing→rolled forward、PNC 未挂载→RETRY 且记录保留、写不下去→拒绝 prepare)、`RunRecordTest` 4 个;突变检查(跳过恢复计划故障)被 `aRunningRunIsResumed…` 抓到。controller 全量 194 个通过(2 个 opt-in 跳过)。
+**未验证**:`emptyDir` 在容器重启后的实际保留、真实 sidecar 重启——沙箱里没法测(§3)。

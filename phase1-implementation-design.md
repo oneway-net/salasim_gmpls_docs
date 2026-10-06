@@ -683,7 +683,7 @@ O11 的语义写死如下。
 | 9 | PNC 的原生拓扑只放内存，不写 MD-SAL | 没有 YANG 消费者 | 需要经 YANG 暴露原生拓扑时写入 |
 | 13 | `salasim-fleet:start-run-on-devices` 的输入叶子 `resume`（boolean，默认 false；E2，用户 2026-10-06 批准） | E2 之后 Backend 不再自己挂载节点，暂停后的节点 resume（重发 start-run）没有路径；fleet 的 start 失败会回滚，对 resume 不适用 | 同 fleet RPC 一起迁移 |
 | 14 | `salasim-capability`(整个新模块;目标架构 C1 草案,2026-10-06):交换技术/层/资源维度/目标函数/算法的注册表结构与部署的技术选择 grouping;注册表内容以 RFC 9195 实例数据发布(`instance-data/salasim-capabilities.json`) | 标准没有"平台支持哪些技术、各用哪个 PCE 算法"的模型;交换能力与编码复用 `ietf-te-types` 的 identity(`switching-capabilities`、`lsp-encoding-types`),层间关系不在此处(留给 `ietf-te-topology` 的 supporting/underlay) | 无标准可替代的部分是注册表本身;若 `ietf-te` 或 TE 拓扑模型以后覆盖"技术与资源维度",再迁移 |
-| 15 | `salasim-actn:run-status`(config false 容器:phase unknown/idle/preparing/prepared/committing/running/aborted/failed、run-id、dropped-reports、last-error{app-tag,message};MDSC 可恢复性 M1,2026-10-06) | 标准没有"控制器当前持有哪个 run、是否刚重启过"的模型;重启后 `unknown` ≠ `idle` 是区分"丢了状态"与"没有 run"的关键 | 若 ietf-te 或 RFC 9195 之外的运维状态模型覆盖,再迁移 |
+| 15 | `salasim-actn:run-status`(config false 容器:phase unknown/idle/preparing/prepared/committing/running/aborted/failed/recovering、run-id、dropped-reports、evidence-incomplete、last-error{app-tag,message};MDSC 可恢复性 M1,2026-10-06) | 标准没有"控制器当前持有哪个 run、是否刚重启过"的模型;重启后 `unknown` ≠ `idle` 是区分"丢了状态"与"没有 run"的关键 | 若 ietf-te 或 RFC 9195 之外的运维状态模型覆盖,再迁移 |
 
 ## 12. 估算汇总（agent-day）
 
