@@ -32,7 +32,7 @@ SSON 已完全移出平台。本文记录交互确认的决策;**只是决策,�
 
 ## 未决 / 下一步
 
-1. D4 的 lighty 持久化核实。
+1. **D4 核实结果(只读)**:`ControllerBootstrap.controllerConfiguration` 用 `getDefaultSingleNodeConfiguration`,代码注释写明是 in-memory datastores,没有传入 `configurationDatastoreContext`/`operationalDatastoreContext` JSON(lighty 缺省时日志为 "using default one")。lighty 支持这两个 JSON,所以持久化可配置,但**是否真能重启恢复未验证**:需要写入 config datastore、重启、再读的实测,而沙箱不能绑定 Pekko 的 127.0.0.1:2550。另外,MDSC 的 PlannedFaults/prepare 状态现在在 Java 内存里,不在 datastore,D4 还要先把这些状态建成 YANG 数据并改写读写路径。工作目录里的 `data/odl.cluster.server/shards/*/journal-*.log` 是 Pekko 日志,说明有磁盘 journal 在写,但不等于重启后会恢复。
 2. 远端与分支、基线 run(F3 阻塞项,见 `phase1-f3-runbook.md`)。
 3. 每个决策的实施顺序、工作量与依赖尚未排,需要单独的设计文档;每阶段单独获批后才开工。
 4. 建议先做的小项:backend 时钟锚点守护测试;`TedbJsonLoader` 栅格参数改由资源维度决定。
