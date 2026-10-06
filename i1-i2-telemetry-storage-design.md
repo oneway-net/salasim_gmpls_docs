@@ -187,3 +187,11 @@ OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁
 
 需要你重新决定 Q1(见对话)。
 
+## 12. Q1 重新决定(2026-10-07,用户):**方案 A,runtime.db 一起迁,分步**
+
+覆盖第 10 节的 Q1 行。顺序:
+1. 不依赖这个决定、对 A/B/C 都有用的部分先做:**(a)** 只经边界的行为契约测试(`tests/store_contract/`,后端由环境变量选择,默认 SQLite);**(b)** `RuntimeInputs` 端口,把统计存储对 `rt.` 的 11 处读收口。
+2. 再做 Postgres 的 `pce` 与 `rt` 两个 schema(同一个库),JOIN 原样保留。
+3. 控制面存储(`runtime_store`、`service_store`、`tunnel_store`、`operations`、`simulation_run_store`,约 9.7k 行)与统计存储一起迁;**"跨库提交"特殊逻辑**(`runtime_store.py:346`)随之删除。
+估算见第 11 节:I2 合计由约 22–31 天上调到约 **34–49 天**(+12–18 天,±50%)。
+
