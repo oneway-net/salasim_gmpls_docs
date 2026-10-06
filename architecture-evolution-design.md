@@ -125,7 +125,7 @@ Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──P
 > 已知取舍：纯通知无法发现"节点整体故障"（故障模型暂只含链路故障）；时延为理想传输时延，不含 LSA 节流和泛洪。已完成的 OSPF API 客户端、LSA 解码、`OspfFaultService`（`salasim.pce.ospf.enabled`，默认关）保留，不删除。FRR sidecar 与链路隧道搁置，`scripts/k8s-ospf-probe.sh` 仍可用于将来评估。
 
 现状：
-- Emulator 生成的配置固定 `IS_OSPF_MODE=false`（`scenario_compiler.py:3802`）。即使打开，也只有 Hello 加自己发 LSU、依赖组播，在 k8s 里跨不了 pod。
+- （H1 前的现状，旧 `IS_OSPF_MODE` 已于 2026-10-06 随旧 OSPF 代码删除，原引用 `scenario_compiler.py:3802` 作废）Emulator 生成的配置固定 `IS_OSPF_MODE=false`。即使打开，也只有 Hello 加自己发 LSU、依赖组播，在 k8s 里跨不了 pod。
 - PCE 侧 OSPF 默认关闭，只解析 LSU。`MultiLayerTEDB` 有三个 bug：区域过滤会丢 LSA、改图不加锁、链路恢复时不加回边。而且每帧轮换都会覆盖 OSPF 做过的修改。
 - 协议库只实现了 LSU，没有 Fletcher 校验和。
 
@@ -149,7 +149,7 @@ Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──P
 - **WSON**（将来）：节点代理通过 FRR OSPF API 自己发 opaque LSA（RFC 7688 波长可用性），编码复用 `AvailableLabels`、`BitmapLabelSet`。
 - **speedup 校验**：`simulation.v1.yaml` 规定开启 OSPF 时 speedup 必须为 1.0，run 启动 preflight 不满足就返回 409。
 - **删除（已完成，2026-10 Phase 1）**：Backend 发给 PCE 的故障 HTTP 链路，即 `arm_random_link_fault_timers` 到 `_deliver_random_link_fault` 再到 `/api/v1/sim/faults/*`。故障改由控制器经 NETCONF 下发。
-- **删除旧 OSPF 代码**：emulator `transport/ospf/*`、PCE 和 topology 两份 `tedb/ospfv2/*`、`TopologyUpdaterThread` 的 OSPF 分支、`netManager`/`vntm` 的发送器。`satenets/master` 分支不合并。
+- **删除旧 OSPF 代码**（**已完成：H1，2026-10-06**；保留 FRR API 保真路径、协议库 LSA 编解码，以及遗留测试客户端 `netManager/OSPFSender`、`vntm/emulator/OSPFSender`）：emulator `transport/ospf/*`、PCE 和 topology 两份 `tedb/ospfv2/*`、`TopologyUpdaterThread` 的 OSPF 分支、`netManager`/`vntm` 的发送器。`satenets/master` 分支不合并。
 
 ### W6　NETCONF/RESTCONF 控制器化
 

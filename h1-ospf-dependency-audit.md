@@ -79,3 +79,20 @@
 - emulator 与 PCE/topology 通过 `isOSPFMode`、`OSPFSession` 配置与生成器耦合,漏掉任何一边会在启动时 NPE。**对策**:成对提交,启动一遍 `NodeInformation` 与 `PCEServerParameters` 的单元测试。
 - 本次没有运行任何测试,"测试不引用候选"来自 grep,不是执行结果。
 - C 类决定会改变范围:连遗留测试客户端和 `VNTMServer` 一起删,会明显超出 4–5 天。
+
+## 实施结果与对核查的修正(2026-10-06)
+
+H1 已按 C 类决定(删 1 和 3,保留 2 和 4)实施,各仓库已本地提交,未 push。
+
+**修正**:核查把 topology 的 `RedisDatabaseHandler`/`LayerTypes` 当作 `RedisTEDUpdaterThread` 的孤儿依赖,我据此删了,**编译 emulator 时才发现 emulator `LSPManager` 用它写 LSP 状态到 Redis(`LSPManager.java:343,970-976`)**,已恢复。教训:删"孤儿"前要跨**所有**仓库 grep,不只 topology/PCE;核查没有覆盖 emulator 对 topology 类的引用。
+
+删除:topology `tedb/ospfv2/*`、`TopologyReaderOSPF`、`plugins/updaters/TopologyUpdaterThread`、`RedisTEDUpdaterThread`、`OspfParams`、`TopologyModuleParams*` 的 OSPF 开关与 `reachabilityFile`(只被已删 reader 使用)、`SimpleTEDB.notifyPhysicalLinkDown`(无调用者);PCE `tedb/ospfv2/*`、`server/TopologyUpdaterThread`、`server/RedisTEDUpdaterThread`、`TopologyManager.initFromOSPF`、`PCEServerParameters` 的 OSPF 字段与 `OSPFParserLogFile`;emulator `transport/ospf/*`、`TestRawSocket`、`isOSPFMode`、`NetworkNode`/`NodeManagementSession`/`TopologySwitchTask` 的 OSPF 调用、`TedLinkStateActuator`/`NodeNetconfManagement` 的 `Supplier<OSPFSenderManager>` 参数;backend 编译器模板的 `<OSPF>` 块、`OSPFParserLogFile`、`isOSPFMode`、`IS_OSPF_MODE`;`pce.sh`/`emulator.sh` 的对应变量;样例 XML 与文档。
+
+有意保留:FRR-API 路径;protocols 的 OSPF 编解码;`netManager/OSPFSender`、`TCPOSPFSender`、`vntm/emulator/OSPFSender`、`TCPOSPFSender`(遗留测试客户端与 `VNTMServer`);emulator `vntm/topology/elements/OspfParams` 与 `IPNodeParams` 字段(VNTM 数据模型,`interlayerTopology.xml` 带 `ospfParams` 元素,未验证删除是否影响解析);`OSPFParser` 日志器配置(保留的遗留类仍使用);rocksaw JNI;`notifyWavelengthChange`(留给 H2);`node.ospf.debugDump` 系统属性(只控制拓扑转储,名字里带 ospf,未改);`ParentPCEServerParameters` 的 `OSPFParserLogLevel`、PCE 的 `timerOSPFupdatesToParentPCE`。
+
+验证(沙箱,私有 `-Dmaven.repo.local` 副本,顺序 yang → protocols → topology → PCE):
+- topology:36 个单元测试通过;`BGP4Peer` 的 socket 集成测试照旧失败(沙箱,基线)。
+- PCE:1496 个,0 失败,21 个沙箱错误(与基线一致;之前那个 `OspfApiClientTest` 不稳定测试这次通过)。
+- emulator:86 个通过,1 个跳过,BUILD SUCCESS。
+- backend:2244 通过,2 个基线失败(`test_update_cluster_and_test_script`),`test_configuration_property_drift` 通过。
+- **未验证**:真实启动一个 PCE/emulator pod 看配置解析(`NodeInformation` 不再读 `isOSPFMode`、PCE 参数解析忽略旧元素)只靠单元测试和代码阅读;沙箱没有集群。
