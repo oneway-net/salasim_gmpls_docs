@@ -133,3 +133,10 @@ controller 仓库有进程内的端到端测试(`FullChainTest`/`ChainWorld`,真
 2. **`committing` 之后的恢复策略**:向前滚动(推荐),还是一律中止。
 3. **先做 M0+M1**(约 5 天,消除所有静默错误,不改事务语义)再做持久化(推荐),还是一起做。
 4. **PNC 恢复是否在本轮范围内**(M3,最不确定的一块)。
+
+## 已确认的决定(2026-10-06)
+
+1. **存储**:先做文件实现(`controller-data` 卷上的原子重命名),`RunStateStore` 接口与存储无关;lighty datastore 等 P4 验证后再决定。
+2. **`committing` 之后的恢复**:向前滚动(同 anchor 重发 commit),任何参与者不能 commit 则冻结并记 `failed`。
+3. **顺序**:先 M0+M1(特性测试 + 可观测性,不改事务语义),再做持久化(M2)。
+4. **范围**:本轮只做 MDSC 的恢复;PNC 先只做可见性(重启后 `run-status` 为 `unknown`、run 可见失败),PNC 的真正恢复(M3)之后再做。
