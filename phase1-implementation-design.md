@@ -677,6 +677,8 @@ O11 的语义写死如下。
 | 6 | `schedule-link-faults`、`report-abstract-topology-change`（A8） | 计划故障是仿真控制，没有标准；Parent 没有 NETCONF 客户端 | 同 #1 |
 | 7 | network-id 的帧编码 `<domain>/abstract/f<i>`（A7） | TVR 排程模型仍是草案 | TVR（ietf-tvr-*）成为 RFC 后迁移 |
 | 8 | Domain PCE 继续读编译器 JSON 排程 | 本期不改 Domain PCE 的帧解析器 | Phase 2 统一为 RFC 9195 |
+| 10 | `salasim-sat-topology:sat-topology/origin-time`（P-a，用户 2026-10-06 批准） | `valid-from` 是 run 相对的 `sim-time`，而 run 的 sim 锚点是任意的绝对时刻，Parent 要把每帧放到绝对时间轴上 | TVR 排程模型成为 RFC 后迁移 |
+| 11 | 用 te-topology 的 `te-node-attributes/domain-id`（uint32）承载节点所属域的 PCEP 域号（点分十进制转 uint32） | 标准已有该叶子，不算自定义，登记为约定 | – |
 | 9 | PNC 的原生拓扑只放内存，不写 MD-SAL | 没有 YANG 消费者 | 需要经 YANG 暴露原生拓扑时写入 |
 
 ## 12. 估算汇总（agent-day）
