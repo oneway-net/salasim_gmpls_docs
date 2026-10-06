@@ -165,3 +165,25 @@ OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁
 | Q6 D5 | **真实 NATS 跑通之后才删**旧 HTTP 路径和 `TelemetryOutbox` |
 | 先做哪块 | **I2-a**:抽 `StatisticsStore` 接口 + SQLite 特征化测试 |
 
+## 11. I2-a 的发现(2026-10-07):`pce_state` 不是自包含的,Q1 的前提需要重审
+
+**已做**(backend 提交 `e6cb206`):`statistics_store.StatisticsStore`——统计存储的唯一边界(21 个方法,全部是现有 SQLite 实现的真实签名),和一个把边界关死的测试(签名一致;源码里没有任何模块越过边界使用存储;边界里没有无人调用的方法)。存储对外的访问全部经 `app_state.v3_statistics_store.<方法>`,边界干净。`ingest_terminal_facts`、`try_finalize_slice`、`list_slices` 只被存储内部调用,`measurement_sampled_out_count` 只被测试调用,所以**不在**边界里。
+
+**发现一:现有测试大部分不能直接跑在另一个后端上。** 对 362 个相关测试(`test_v3_*`、`test_fault_statistics`、`test_pce_state_gc`、`test_r22_*`、`test_telemetry_consumer` 等)做了静态分类:只有 **101 个**既不碰 SQL、也只调边界方法;**216 个**调用了边界之外的存储内部方法(`ingest_tunnels`、`ingest_protections`、`_ingest_*`…);**151 个**直接写/读 SQLite。所以"同一套测试对两边跑"这句话作废,**需要新写一套只经边界的行为契约测试**(`ingest_ordered_updates`/`ingest_link_chunk` → 结果读取),再把现有测试里有价值的场景迁进去。
+
+**发现二(影响范围决定):`pce_state` 与 `runtime.db` 在 SQL 层互相 JOIN。** 之前我(根据调研摘要)把它写成"只有 ATTACH 的跨库读",**低估了**:
+- 存储 → 控制面:`v3_statistics.py` 里有 11 处读 `rt.` 表(`simulation_runs`、`services`、`service_tunnel_bindings`、`tunnels`、`operations`、`fault_delivery_records`),彼此之间有 JOIN,但**不与 pce 表 JOIN**——这个方向可以用一个"运行时输入"端口解决。
+- **控制面 → 统计投影(这才是问题)**:`service_store.py`(11 处)、`runtime_store.py`(17 处)、`tunnel_store.py`(1 处)用 **`LEFT JOIN pce.service_current` / `pce.tunnel_current`** 把服务/隧道列表和实时状态在 SQL 里拼起来(`service_store.py:318,387,451,467,830,833`、`runtime_store.py:3171,3175,2261`…),还有对 `pce.simulation_slice_results`/`pce_stream_state`/`pce_rejected_facts` 的读和对 `pce.<table>` 的删除(GC,`runtime_store.py:3077,3236,3247`)。这 ~30 处是**跨库 JOIN**。
+
+所以"只迁 `pce_state`、`runtime.db` 留在 SQLite"在 SQL 上**行不通**:Postgres 的表与 SQLite 的表不能 JOIN。可选的做法:
+
+| 方案 | 做法 | 代价 / 风险 |
+|---|---|---|
+| **A. runtime.db 一起迁**(Q1 选项 2/3) | 两个 schema 在同一个 Postgres 库里,JOIN 保留,"跨库提交"特殊逻辑消失 | 要迁的不只是统计:`runtime_store.py` 4914 行(201 处 `execute`)、`service_store` 1518、`tunnel_store` 1154、`operations` 1129、`simulation_run_store` 416,合计约 9.7k 行,SQL 写法同样要逐处审。比原估的"+5–8 天"大,**我现在估 +12–18 天** |
+| **B. 只迁 pce_state,JOIN 改成应用层合并** | `service_store` 等 ~30 处:先查 SQLite 的服务列表,再按 id 批量查 PG 的 `service_current`/`tunnel_current`,在 Python 里合并 | 服务列表是热点路径(历史上"服务列表 4–6 s"的问题就出在这里);IN 列表分批 + 合并有性能风险,且每处都要保证排序/分页/过滤与 SQL 版一致(过滤条件若引用 `service_current` 的列,要把过滤也搬到应用层) |
+| **C. 投影留在 SQLite,事实/游标/slice 结果进 PG** | `*_current` 投影继续在 SQLite 维护,控制面 JOIN 不变 | 摄入要同时写 PG(事实、游标)和 SQLite(投影):**两库之间没有原子性**,崩溃时事实在、投影没跟上;靠"投影可由事实重建"补救,但这违背了现在"同一事务内刷新投影"的保证。**不建议** |
+
+**我的建议:A,但分步**——先做不依赖这个决定的部分(边界已完成;写**只经边界的行为契约测试**;抽出 `RuntimeInputs` 端口把存储对 `rt.` 的 11 处读收口),再在拿到 Postgres 实绩后迁 `runtime.db`。理由:B 把风险压在热点路径上,C 破坏原子性;A 工作量大但两者都没有的"语义不变"保证最强(JOIN 原样保留)。
+
+需要你重新决定 Q1(见对话)。
+
