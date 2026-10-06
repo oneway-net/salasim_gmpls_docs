@@ -1,6 +1,6 @@
 # C3 设计:Parent 账本与域内账本的语义统一(2026-10-06)
 
-状态:**设计,未实施,待用户确认**。前置:`c3-ledger-audit.md`(核查、决定、C3-0/C3-1 结果)。本文回答审计里留下的三个问题:(a) `set` 覆盖还是增量;(b) 两套键空间怎么统一;(c) 两把锁怎么保持。依据是对 `ParentMplsBandwidthUpdater`、`ParentMplsAdmissionCoordinator`、`LspResourceIndex`、`FrameView` 的通读,以及一次对 `ParentMdLspReroute` 调用点的核查(锁顺序只部分追踪,见 §8)。
+状态:**设计;§0 的结论 2 和 §3 已被取代**(2026-10-06,用户要求账本权威 + store 只是发布值,见 `c3-ledger-audit.md` 末节);§1、§2 的事实仍然成立。前置:`c3-ledger-audit.md`(核查、决定、C3-0/C3-1 结果)。本文回答审计里留下的三个问题:(a) `set` 覆盖还是增量;(b) 两套键空间怎么统一;(c) 两把锁怎么保持。依据是对 `ParentMplsBandwidthUpdater`、`ParentMplsAdmissionCoordinator`、`LspResourceIndex`、`FrameView` 的通读,以及一次对 `ParentMdLspReroute` 调用点的核查(锁顺序只部分追踪,见 §8)。
 
 ## 0. 先说结论
 
@@ -115,3 +115,7 @@ public interface ResourceDimension<A> {
 1. **"统一"的解释**:按 §3–§5 在维度层统一(推荐),还是按 §6 合成一个账本类。
 2. **D1–D7** 是否都按"保持现状"处理(推荐);尤其 D1(重复跳在 Parent 的在途持有里只计一次,在确认账本里按遍历次数计)是不是你认为的预期行为——它看起来像一个不一致,但统一前不应顺手改。
 3. **`clearAllPending` 缺少生产重置**:本次不处理(推荐),还是并入 C3。
+
+## 修订(2026-10-06):Parent 收敛的实际含义
+
+域内账本已经改成 Parent 的模型(账本权威,整体 `set` 发布),所以**需要变化的主要是域内,Parent 几乎不用动**:Parent 今天就是"从 LSPDB 派生账本,每次整体设值"。剩下的 Parent 工作缩小为:(1) `refreshLocked` 的 `store.set`/`apply` 改走 `BandwidthDimension.set`,`parentCapacities` 改走 `BandwidthDimension.capacity`(消除 `apply` 这条未绑定边的旧路径,前提是确认 `ParentRunStarter:299` 那份未绑定的图是否还在使用);(2) 补 Parent 的 golden trace(C3-P0 的覆盖缺口仍然存在)。D1–D7 的分歧不变,继续保持。预计 Parent 部分约 2–3 天。

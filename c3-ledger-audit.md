@@ -131,3 +131,21 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 
 **发现并修了一个自己的失误**:用脚本改 `FrameView.mplsCapacityBps` 时,`index("    }
 ")` 命中了方法内部 if 块的闭括号,留下了半截旧代码(编译失败);已手工修复并重跑。
+
+## 方向调整与 C3-2 第二阶段(2026-10-06,用户:"MplsOccupancyStore 适合多切片拓扑,FrameView 和账本如果不必要或不合理可以优化")
+
+**决定**:账本是权威,store 只是它发布的值(整体 `set`),域内与 Parent 收敛;拆掉 `FrameView`(锁归 TED,键与容量归维度,删除对象、`ResourceOverlay`、`projectReservedOnto`)。这**取代**了 `c3-parent-ledger-semantics.md` §3 里"两种发布方式并存"的结论(那份文档的 §1、§2 的事实仍然成立)。
+
+**做了(PCE `1327d23`、topology `a8622ff`,本地,未 push)**
+- `FrameView` 拆除:`TedLocks.write/read`(topology);`BandwidthDimension.occupancyKey/hasLink/capacity/hasInterDomainLink/pin`(topology);删除未被使用的有效 TED 对象、`ResourceOverlay`(每次换帧都构建,只被一个测试读)、零调用者的 `projectReservedOnto`。
+- `LspResourceIndex` 改为账本权威:内部 `ChargeBook`(store 键 → 已确认分配与在途持有所占的总和,每个分配加入时固定其电荷:准入时的 store 键、当时 Parent 拥有的跳被跳过),每次变更后对受影响的键用 `BandwidthDimension.setDetached` 做**绝对设值**,在 TED 写锁内进行;新增 `republishAll()`(批量路径:清空、重建报告、对端对账)。删除:`MplsTedProjection`(原 FrameView 的重放、`applyMplsDelta`、带回滚的 `reprojectOnTed`、按存储键逐跳释放、`reserveHolds`/`releaseHolds`、`mplsReplayAllocations`)。换帧不再重放,也不再为它取索引监视器;`AutonomousClockThread` 的 Simple/WSON 分支同理。
+
+**验证**
+- **域内 golden trace(3 个 seed × 300 步,含故障/重路由/重建)与 Parent trace、并发压力测试,在没有重新录制的情况下逐字节重现基线 `a817645`。**
+- PCE 全量 1510 个,0 失败,21 个沙箱错误(基线);topology 79 个单元测试;emulator 89 个。
+
+**有意的行为变化(只有这一处,已在测试里明确)**:一个超过容量的 PCRpt,以前 store 自己的上限会拒绝第二次充电,链路仍显示 20 Mbps 空闲而账本持有 130 Mbps;现在如实发布 130,推导出可用 0。`LspResourceIndexTest.confirmedOversubscriptionIsRetainedAsAuthoritativeState` 的期望由 20 改为 0,并写了原因。另外,账本测试的夹具改为把边绑定到共享 store(与真实加载的帧一致),因为账本不再支持给**未绑定的边**记账(那是只存在于测试/引导路径的旧代码路径)。
+
+**发现(未处理)**
+- 经过这次改动,TED 侧的 `reserveMplsBandwidth/releaseMplsBandwidth/resetMplsBandwidth`(`SimpleTEDB`、`MultiLayerTEDB`)、`RouterId.adjustMplsReserved/resetMplsBandwidth`、`IntraDomainEdge.adjustMplsUnreserved/resetMplsUnreserved`、`BandwidthDimension.adjust/reserve/release/reset` 以及 `MplsOccupancyStore.reserve/release/reset` **在生产代码里没有任何调用者**(只剩注释和测试)。删除它们需要同时删/改 `RouterIdTest`、`MplsBandwidthCharacterizationTest`、`MplsOccupancyStoreTest` 的相应部分、`BandwidthDimensionTest`、`MultiLayerTEDBRcuTest`、`TedbJsonLoaderTest` 与 PCE 的 `LspResourceIndexTest`(1 处)等;这些测试钉住的是即将被删除的语义。
+- `ParentRunStarter.java:299` 用不带 store 的 `loadParentGraph(frame.topologyJson)`:Parent 的这份图的边是未绑定的(Parent 的 `apply` 旧路径对它生效)。后续 Parent 收敛时要弄清它是否仍被使用。
