@@ -135,7 +135,8 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 | 步骤 | 状态 | 备注 |
 |---|---|---|
 | H1 | 完成(本地) | 见 `h1-ospf-dependency-audit.md` 的「实施结果」;各仓库本地提交,未 push/部署;含对核查的一处修正(`RedisDatabaseHandler` 被 emulator 使用,已恢复) |
-| H2–H3 | 未开始 | |
+| H2 | 依赖核查完成(只读) | 见 `h2-wson-dependency-audit.md`;建议拆 H2a(可做)与 H2b(暂缓,与 W1 冲突);四个决定待用户确认 |
+| H3 | 未开始 | |
 | P1–P4 | 未开始 | |
 | C1–C4 | 未开始 | |
 | W1–W5 | 未开始 | |
