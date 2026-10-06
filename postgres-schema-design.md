@@ -4,11 +4,11 @@
 
 ## 0. 范围与结论
 
-**范围(Q1=A)**:`runtime.db` 的 18 张表 + `pce_state.sqlite3` 的 24 张表,共 **42 张**,放进**同一个 Postgres 库**的两个 schema:`rt`(控制面)和 `pce`(统计)。不在范围:冷库(`telemetry.sqlite3`:告警确认、agent 清单、集群状态采样)、PCE 本地的 `SpillStore`/outbox。**不迁移数据、不做兼容层**(第 14 节决定):这是一份面向空库的基线 schema(v1)。
+**范围(Q1=A)**:`runtime.db` 的 18 张表 + `pce_state.sqlite3` 的 23 张业务表(`sqlite_sequence` 是 SQLite 内部表,不算),共 **41 张**,放进**同一个 Postgres 库**的两个 schema:`rt`(控制面)和 `pce`(统计)。不在范围:冷库(`telemetry.sqlite3`:告警确认、agent 清单、集群状态采样)、PCE 本地的 `SpillStore`/outbox。**不迁移数据、不做兼容层**(第 14 节决定):这是一份面向空库的基线 schema(v1)。
 
 **主要设计结论**
 
-1. **`pce` 下全部 24 张表都带 `run_id`,所以全部按 `run_id` LIST 分区**。一个 run 的清理 = 一个事务里 `DROP` 它的所有分区,不再逐行 `DELETE`;分区由 `pce.ensure_run()` 在第一次写入时建、`pce.drop_run()` 删(第 3 节)。
+1. **`pce` 下全部 23 张表都带 `run_id`,所以全部按 `run_id` LIST 分区**。一个 run 的清理 = 一个事务里 `DROP` 它的所有分区,不再逐行 `DELETE`;分区由 `pce.ensure_run()` 在第一次写入时建、`pce.drop_run()` 删(第 3 节)。
 2. **强类型**:ID 用 `text`,序号/毫秒/字节用 `bigint`,标志用 `boolean`,时间用 `timestamptz`,载荷用 `jsonb`,状态用 `text + CHECK`(比 PG 枚举好演进,契约测试里的状态集合不会因 `ALTER TYPE` 而卡住)。
 3. **载荷只存 `jsonb` + 摄入时算好的 `payload_hash`,不再存原文 text**。第 14 节写的"同时保留原文供哈希"是**多余的**:幂等判断比较的是**入站规范化文本的哈希**与**已存的哈希**(`_existing_payload_hashes`),存储后不需要重算。已更正(见第 11 节)。
 4. **表达式索引变成"生成列 + 普通索引"**:现有 5 处 `json_extract(payload_json,…)` 的表达式索引(可用性转折时刻、`faultContext.faultEventId`)改成 `GENERATED ALWAYS AS (...) STORED` 的类型化列,查询直接用列。
@@ -94,14 +94,14 @@ END $$;
 ```
 
 要点与取舍:
-- **partition 是 23 个,不是 24 个**:`pce.run_tables()` 里列了 23 张;第 24 张 `slice_input_revisions` 也在里面(已计),`sqlite_sequence` 是 SQLite 内部表,不是业务表。**这个数字要在实现时用 `\dt` 对一遍,不要信我的手数**(未核实)。
+- **每个 run 23 个分区**(`pce.run_tables()` 的 23 项,与现有 `pce_state.sqlite3` 的 23 张业务表一一对应;`sqlite_sequence` 是 SQLite 内部表)。实现时用 `\dt pce.*` 对一遍。
 - **何时建分区**:存储在**第一次写某个 run 的事实之前**调用 `pce.ensure_run(run_id)`(同一事务里,幂等;咨询锁防止两个 PCE 同时建)。现有契约允许"没有控制面行的 run 也能摄入"(`_reject_late_fact_locked` 的注释:离线校验),所以**不依赖** `rt.simulation_runs` 先存在。
 - **何时删**:`drop_run` 在一个事务里删 run 的全部分区,**中途崩溃要么全删要么全不删**。这对应契约覆盖缺口 2(清理)——要新写契约:清理后所有读都是空;清理两次是幂等;清理一个 run 不影响另一个 run;读一个**正在被清理**的 run 看到的是"全有"或"全无"。
 - **分区数量**:每个 run 23 个分区;一千个 run = 2.3 万个分区。Postgres 14 能撑,但**计划时间随分区数增长**,所以**所有查询必须带 `run_id` 等值条件**(现在几乎都带);没有 `run_id` 的查询只有清理/统计类的,要单独审。长期留存的 run 数量(未测)决定要不要在运行时把旧 run 归档/清理。
 - **为什么不用 HASH 分区**:HASH 不能 `DROP` 一个 run;**为什么不按时间分区**:run 的生命周期与 `occurred_at` 无关,`slice` 读取按 run。
 - **父表上的查询**不再是 `FROM pce.x WHERE run_id=?` 慢——分区裁剪在 `run_id = $1`(参数化)时发生于执行期(`plan_cache_mode` 默认的自定义计划会在计划期裁剪)。**未测量**,要在 I2-c 用真实数据量验证。
 
-## 4. `pce` schema(24 张)
+## 4. `pce` schema(23 张)
 
 下面是**规则 R1–R10 应用于全部表**的结果。完整 DDL 只写核心表;其余表按"列映射"列出,实现时机械展开。
 
