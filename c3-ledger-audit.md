@@ -158,4 +158,4 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 
 **验证**:PCE 全量 1510 个,0 失败,21 个沙箱错误(基线);**域内与 Parent golden trace、并发压力测试仍逐字节重现基线 `a817645`**;topology 单元测试 61 个(`BGP4Peer` socket 集成测试照旧失败,基线);emulator 89 个。
 
-**净效果**:C3-2 起点到现在,topology 与 PCE 里删掉了约 1000 行(`FrameView` 及其重放、回滚、按键释放、三份重复的未绑定账目路径、store 的上限与 CAS 重试、`ResourceOverlay`),新增约 300 行(`ChargeBook` 与发布、`TedLocks`、`BandwidthDimension` 的键/容量、测试)。
+**净效果(`git diff --shortstat`,只算 `src/main`,PCE 自 `a817645`、topology 自 C3-1 之前的 `e06ff9e`)**:PCE 255 行新增、812 行删除;topology 190 行新增、310 行删除;合计新增 445、删除 1122,净减约 680 行。删掉的是 `FrameView` 及其重放、回滚、按键释放、重复的未绑定账目路径、store 的上限与 CAS 重试、`ResourceOverlay`;新增的是 `ChargeBook` 与发布、`TedLocks`、`BandwidthDimension` 的键与容量、`Capabilities` 之外的 C3 代码。(此前写在这里的"约 1000 行/约 300 行"没有测量,已更正。)
