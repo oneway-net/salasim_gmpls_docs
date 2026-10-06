@@ -119,3 +119,15 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 **验证**:topology 76 个单元测试通过(`BGP4Peer` 的 socket 集成测试照旧失败,沙箱基线);PCE 全量 1506 个,0 失败,21 个沙箱错误(基线),**域内与 Parent 两套 golden trace 与并发压力测试都逐字节重现基线(`a817645`)**;emulator 89 通过。没有重新录制任何 trace。
 
 **没有做**:`ResourceDimension` 目前只有带宽一个实现,而且只被 topology 内部的这两处使用;`LspResourceIndex`、`FrameView`、`RouteApplier`、`ParentMplsBandwidthUpdater` 仍直接用 `MplsOccupancyStore` 与 `reserveMplsBandwidth`(那是 C3-2)。接口按"金额类型泛型"设计,是为了以后波长维度的金额是标签而不是数量;这只是设计意图,没有波长实现来检验它。
+
+## C3-2 完成(2026-10-06,域内;本地提交 topology `c196f8f`、PCE `6ed4130`,未 push)
+
+**做了**
+- topology:`ResourceDimension` 增加 `capacity(link)`(单位是该维度自己的,带宽为 bps,无可用基线为 -1);`BandwidthDimension.capacity`(`Math.round(baselineMbps*1e6)`,基线为 `Float.MAX_VALUE`/非有限/负数时 -1)与 `releaseDetached(store, key, bps)`(链路不在当前帧时按稳定键释放)。4 个新测试(含:0.75 bit 的容量取整为 1,而 store 上限用 `(long)` 截断,二者有意不同)。
+- PCE:`LspAllocation.amount(ResourceDimension<Long>)` 成为"该分配占用多少某维度"的唯一入口(MPLS 且带宽 > 0 才占带宽,WSON/无带宽/未知为 0)。原来**写了六遍**的守卫(`LspResourceIndex` 三处、`FrameView` 三处:`switchingType == MPLS && bandwidthBps > 0`)全部改为 `amount(BANDWIDTH) <= 0`,充电与释放所用的数量也取自 `amount`;`FrameView.mplsCapacityBps` 改用 `BandwidthDimension.capacity`(D2:无容量时域内仍**拒绝**,这一语义留在调用方);`LspResourceIndex.releaseOnTed` 里直接 `store.release` 改为 `releaseDetached`。新增 `LspAllocationAmountTest`(4 个)。
+- 有意没有改:`LspAllocation.bandwidthBps` 字段与其余约 90 处引用(决定:并行访问器分步替换,C3-3 清理);`fromReport` 里的 `Math.round(bw*1e6)` 带宽转换(Parent 的同名转换多了 NaN/无穷保护,两者不等价,所以不合并);`FrameView:354` 的 `ev.bandwidthBps`(事件对象,不是分配)。
+
+**验证**:域内与 Parent 两套 golden trace 与并发压力测试**逐字节重现基线**(没有重新录制);PCE 全量 1510 个,0 失败,21 个沙箱错误(基线);topology `BandwidthDimensionTest` 8 个通过;emulator 89 通过。
+
+**发现并修了一个自己的失误**:用脚本改 `FrameView.mplsCapacityBps` 时,`index("    }
+")` 命中了方法内部 if 块的闭括号,留下了半截旧代码(编译失败);已手工修复并重跑。
