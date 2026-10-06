@@ -169,3 +169,13 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 **对原计划的偏离**:C3-P0(先补 Parent golden trace 的覆盖缺口)我没有做,因为这一步只动两处(发布与容量取数),它们已被现有 Parent trace 的 refresh/容量拒绝/先建后拆等步骤覆盖,未绑定边的 `apply` 路径由新的 `BandwidthDimensionTest` 钉住。**仍未被 trace 覆盖**:`computeAndHoldBestCandidate`、`boundStrandedHold`、D1 的重复跳 ERO(本步没碰它们,但以后动这些要先补)。`ParentRunStarter.java:299` 的未绑定 Parent 图仍然存在,`set` 的未绑定分支就是为它保留的。
 
 **C3 状态**:C3-0 到 C3-2 与 Parent 收敛完成。剩下:C3-3(清理:`LspAllocation.bandwidthBps` 并行访问器的收尾,约 90 处引用逐步换成 `amount(BANDWIDTH)`)、C4(emulator 维度化)。
+
+## C3-3 完成(2026-10-06,本地,未 push)
+
+**对核查数字的更正**:审计里说 `LspAllocation.bandwidthBps` 有"约 90 处引用"(PCE main 98 处),那是对名字 `bandwidthBps` 的全文搜索,绝大部分是别的类(`EndToEndLspReuseRegistry.key`、`TunnelTelemetryRegistry` 身份、`ParentMplsBandwidthUpdater.bandwidthBps(...)` 方法、局部变量)。**真正读 `LspAllocation.bandwidthBps` 字段的只有十处**:`LspResourceIndex` 6 处、`PceApiRuntime:584`、测试 3 处。
+
+**做了**:剩下的"充电量"读取(`LspResourceIndex` 里持有的 4 处)改为 `hold.amount(BANDWIDTH)`。其余几处**有意保留原字段**:`previous.bandwidthBps`(98、132、229 行)是"沿用上一次的速率"的回退,哨兵值 -1 必须原样传下去,换成 `amount`(非 MPLS 为 0)会改变语义;`PceApiRuntime:584` 是 API 对该分配速率的如实描述;测试里是对速率本身的断言。字段上写明:它是**按给定值记录的速率(未知为 -1),与分配类型无关**;实际在链路上**占用**多少由 `amount()` 决定。因此"并行访问器分步替换、最后清理"到此结束:没有可以再替换的充电读取了。
+
+**验证**:域内与 Parent golden trace、并发压力测试逐字节重现基线 `a817645`;PCE 全量 1510 个,0 失败,21 个沙箱错误(基线)。
+
+**C3 结束**。C3 之后的状态:账本是权威(域内与 Parent 同一种发布方式),维度接缝有 `id`、`capacity`、`set`,TED 侧死 API 已删。仍开放:Parent 的 `computeAndHoldBestCandidate`/`boundStrandedHold`/D1 重复跳没有 trace 覆盖;`ParentRunStarter:299` 的未绑定 Parent 图;`clearAllPending` 没有生产重置;C4(emulator 维度化,含 `LSPManager` 的 `instanceof MPLSResourceManager`)。
