@@ -109,3 +109,13 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 **使用**:重构后任何提交必须逐字节重现这些文件(`mvn test -Dtest='*GoldenTraceTest'`)。有意改变行为时才用 `-Dsalasim.golden.record=true` 重新录制,且要在提交信息里写明原因。
 
 **仍然没有覆盖的**:emulator 的 PCRpt 带宽回声(`NotifyLSP:170`)与 `MPLSResourceManager`/`WSONResourceManager` 单元测试(归 C4);Parent 侧的多线程压力(`ParentMplsAdmissionCoordinatorTest` 已有部分并发用例);`pruneAbsent` 的真实调用路径;图 `clone()` 是否别名 `TE_info`;golden trace 用的是固定的候选路径与简化拓扑,**不覆盖** `MPLS_CrossSnapshot_Algorithm` 的跨快照排序与预计算(这些不是 C3 要改的部分,但如果 C3 误改了它们对账本的调用,这里不会发现);反应式与预计算的带宽严格度仍无专门测试。
+
+## C3-1 完成(2026-10-06,本地提交 topology `e22ea1f`,未 push)
+
+**做了**:topology 新增 `ResourceDimension<A>`(`id`、`reserve`、`release`、`reset`)与 `BandwidthDimension`(`INSTANCE`,`adjust(link, 带符号 bps)`、`reset`);`IntraDomainEdge.adjustMplsUnreserved/resetMplsUnreserved` 与 `RouterId` 的边界链路版本都委托给它,原来的两份实现删除(代码是逐表达式搬过来的:绑定路径按 `(long)(baselineMbps*1e6)` 截断设上限、释放下限 0,未绑定路径保留 0.0001 Mbps 容差和浮点 Mbps 账)。新增 `BandwidthDimensionTest`(5 个:接口契约、两条旧调用路径都到达同一实现)。
+
+**对核查的修正**:审计说 reserve/release/reset"有三份重复(`IntraDomainEdge`、`RouterId`、`MultiLayerTEDB`)"。实际只有**两份**:`MultiLayerTEDB.reserveMplsBandwidth/releaseMplsBandwidth/resetMplsBandwidth` 与 `SimpleTEDB` 的同名方法只是对 `RouterId` 的包装(加 TED 锁),没有自己的逻辑,所以没有改。
+
+**验证**:topology 76 个单元测试通过(`BGP4Peer` 的 socket 集成测试照旧失败,沙箱基线);PCE 全量 1506 个,0 失败,21 个沙箱错误(基线),**域内与 Parent 两套 golden trace 与并发压力测试都逐字节重现基线(`a817645`)**;emulator 89 通过。没有重新录制任何 trace。
+
+**没有做**:`ResourceDimension` 目前只有带宽一个实现,而且只被 topology 内部的这两处使用;`LspResourceIndex`、`FrameView`、`RouteApplier`、`ParentMplsBandwidthUpdater` 仍直接用 `MplsOccupancyStore` 与 `reserveMplsBandwidth`(那是 C3-2)。接口按"金额类型泛型"设计,是为了以后波长维度的金额是标签而不是数量;这只是设计意图,没有波长实现来检验它。
