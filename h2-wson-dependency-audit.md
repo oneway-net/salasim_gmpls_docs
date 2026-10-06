@@ -55,3 +55,12 @@ backend `SWITCHING_OBJECTIVE_FUNCTION`/`VALID_SWITCHING_TYPES`/`ALLOWED_SWITCHIN
 2. **emulator `LSPManager.rerouteBreakBeforeMake` 与 `UNKNOWN` 技术分支**:保留(只删 `WSONResourceManager` 与 `TechnologyParameters.WSON` 的构造分支),还是同时把 `UNKNOWN` 也收掉(改变行为)。核查建议**保留**,留给 C4(emulator 维度化)。
 3. **H2b**:现在删 topology 的波长 API 和 `WSONInformation`(要改 MPLS 预计算与 `AutonomousClockThread`,W2 之后要重写),还是**保留到 W1 设计出来再决定**。核查建议**暂缓**。
 4. **`TechnologyParameters.WSON`**(emulator,`NodeInformation:177`、`EmulatorApiRuntime:360,370`、`NodeManagementSession:170,483,621`;API 的 `technologyName` 会返回 "wson"):随 `WSONResourceManager` 一起删,还是留给 C2。核查未发现 backend/frontend 消费者。
+
+## 已确认的决定(2026-10-06)
+
+1. `GenericLambdaReservation`:**迁出 `wson/` 包**(到 `algorithms/` 或 `mpls/`),行为不变。
+2. emulator `LSPManager.rerouteBreakBeforeMake` 与 `UNKNOWN` 分支:**保留,留给 C4**;只删 `WSONResourceManager` 与它的构造分支。
+3. H2b(topology 波长 API、`WSONInformation`):**暂缓到 W1 设计之后**。
+4. emulator `TechnologyParameters.WSON`:**随 `WSONResourceManager` 一起删**(`NodeInformation:177`、`EmulatorApiRuntime:360,370`、`NodeManagementSession:170,483,621`;API 的 `technologyName` 不再返回 "wson")。注意 `NodeInformation:177` 是 `mpls_s` 标志的 else 分支,删后要明确该标志缺省时的技术取值。
+
+H2a 的实施尚未开始,等用户批准。
