@@ -29,7 +29,6 @@
     "role": "domain",
     "routingSearch": {
      "computeTimeoutMs": 16000,
-     "boundarySearchStrategy": "FULL_COST",
      "maxChildRequestCountPerTunnel": 96,
      "maxPrecomputeChildRequestCountPerTunnel": 48,
      "maxCandidatePathCount": 64,
@@ -132,7 +131,6 @@
     "role": "parent",
     "routingSearch": {
      "computeTimeoutMs": 16000,
-     "boundarySearchStrategy": "FULL_COST",
      "maxChildRequestCountPerTunnel": 96,
      "maxPrecomputeChildRequestCountPerTunnel": 48,
      "maxCandidatePathCount": 64,

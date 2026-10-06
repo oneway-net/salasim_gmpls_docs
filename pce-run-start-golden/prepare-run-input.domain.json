@@ -36,7 +36,6 @@
   "config-digest": "sha256:d4327dc7dd0a36f2b77246606715a113b0626e0f6ac1c22d7a33f2f2f6c036b4",
   "routing-search": {
    "compute-timeout-ms": "16000",
-   "boundary-search-strategy": "FULL_COST",
    "max-child-request-count-per-tunnel": 96,
    "max-precompute-child-request-count-per-tunnel": 48,
    "max-candidate-path-count": 64,

@@ -132,7 +132,6 @@ Envelope (both roles):
 
 | Field | Type | Profile default | Profile bounds | Java check | PCE-side clamp | Consumer | Source key |
 |---|---|---|---|---|---|---|---|
-| `routingSearch.boundarySearchStrategy` | string | `FULL_COST` | `FULL_COST`, `LEGACY` | exactly those two | | `MDHPCEMinNumberDomainsKSPAlgorithm`, `RouteSelectionEvidence` | `parent-pce.routingSearch` (both roles) |
 | `routingSearch.computeTimeoutMs` | long | 16000 | min 1 | positive | | `RouteSearchBudget`, `/sim/status` | same |
 | `routingSearch.maxChildRequestCountPerTunnel` | int | 96 | min 1 | positive | | `RouteSearchBudget`, KSP algorithm | same |
 | `routingSearch.maxPrecomputeChildRequestCountPerTunnel` | int | 48 | min 1; constraint atMost the previous | positive | PCE takes the min of the two | same | same |
