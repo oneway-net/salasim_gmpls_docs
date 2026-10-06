@@ -64,3 +64,8 @@ backend `SWITCHING_OBJECTIVE_FUNCTION`/`VALID_SWITCHING_TYPES`/`ALLOWED_SWITCHIN
 4. emulator `TechnologyParameters.WSON`:**随 `WSONResourceManager` 一起删**(`NodeInformation:177`、`EmulatorApiRuntime:360,370`、`NodeManagementSession:170,483,621`;API 的 `technologyName` 不再返回 "wson")。注意 `NodeInformation:177` 是 `mpls_s` 标志的 else 分支,删后要明确该标志缺省时的技术取值。
 
 H2a 的实施尚未开始,等用户批准。
+
+### 修订(同日,用户追问后)
+
+决定 4 改为:**emulator `WSONResourceManager` 与 `TechnologyParameters.WSON` 在 H2a 里保留**,到 W3 设计时再决定改造还是删除;在类上加 DORMANT 标记(不可用、保留作 W3 参考、去向待 W3)。原因:它是仓库里唯一的 emulator 侧波长资源管理参考实现;删它对 MPLS 路径没有收益;删除要连带改 `NodeInformation:177` 的缺省分支与 API 的 `technologyName`,有行为风险;其内容是否符合"统一账本 + 可插拔维度"接口未细读验证。
+H2a 因此缩小为:迁出 `GenericLambdaReservation`、删 PCE `algorithms/wson/` 包与 `DomainPCEServer`/`PCEPUtils`/`SimpleTEDB.notifyAlgorithms` 管道代码、清 XML 中被注释的 WSON 规则、去掉 backend `isWSONAlgorithm`、给 `WSONResourceManager` 加 DORMANT 标记、同步文档。
