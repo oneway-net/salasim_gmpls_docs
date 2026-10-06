@@ -76,3 +76,17 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 ## 未验证
 
 `pruneAbsent` 在 main 中是否有调用者;图 `clone()` 是否让克隆体别名 `TE_info` 及其 store 绑定;`MultiLayerDomainIdentityTest` 的断言内容;上述缺口是否真的无测试(仅凭测试名判断)。
+
+## 已确认的决定(2026-10-06)
+
+1. **范围:把 Parent 账本一并统一**(用户选择,非核查建议)。含义:`ParentMplsBandwidthUpdater`/`ParentMplsAdmissionCoordinator`/`ParentMdLspReroute`(约 3700 行,40 处引用)也进入维度接缝。**这会改变工期与风险**,见下方"对决定 1 的后果"。
+2. `LspAllocation.bandwidthBps`:**加并行的按维度访问器,分步替换**(核查建议),C3-3 再清理。
+3. golden trace:**同意**,在任何重构提交之前录制基线,放在 PCE 测试的 `computingEngine/algorithms/golden/`。"重构前基线"= 录制时 PCE 工作分支(`framework-enhancement`)的 HEAD,**它已包含 H1/C2 的本地提交**(行为中立,测试与基线一致);若需要纯 Phase 1 之前的基线,要另指定提交。
+4. emulator 的 `instanceof MPLSResourceManager`:**留给 C4**。
+
+### 对决定 1 的后果(统一 Parent 账本)
+
+- golden trace 必须**同时覆盖 Parent 流程**:`ParentMplsAdmissionCoordinator.computeAndHold/commit/release/confirmBreak`、`ParentMplsBandwidthUpdater.refresh/effectiveReservations/capacityViolation`、Parent 重路由的"先占后释放"(make-before-break)与 `ownership rebuild`。现有的 Parent 测试多为行为/时序类,逐字节断言不足(见核查的缺口)。
+- 必须先做**语义设计**再动手,三个具体问题:(a) 域内是增量 `reserve/release`,Parent 是每次 `refresh` 用 `set` 覆盖并靠扫描 LSPDB 重算,统一后接口里是否同时保留"增量"与"整体设值"两种操作,还是把 Parent 也改成增量(会改变双重计费行为);(b) 域内键是 `LspKey(plspId, pccAddress)`、Parent 键是 symbolicName,统一键空间的方式;(c) 两种锁(索引监视器→TED 写锁 / 公平 `ROUTE_ADMISSION_LOCK`)不能在统一后合并或插入新锁层。
+- 估时:原 12–15 天只含域内;含 Parent 需要再加 Parent 语义设计与 Parent 侧 golden trace,**粗估 20–28 天(±50%)**。这个数字依据比域内部分弱,因为我没有读 `ParentMdLspReroute` 的内部。
+- 建议的最小风险排序:先 C3-0(域内 + Parent 的 golden trace 与单元测试),再 C3-1/C3-2 做域内,**Parent 在域内重构通过 golden trace 之后**再接入同一接缝。
