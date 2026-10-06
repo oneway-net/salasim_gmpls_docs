@@ -179,3 +179,13 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 **验证**:域内与 Parent golden trace、并发压力测试逐字节重现基线 `a817645`;PCE 全量 1510 个,0 失败,21 个沙箱错误(基线)。
 
 **C3 结束**。C3 之后的状态:账本是权威(域内与 Parent 同一种发布方式),维度接缝有 `id`、`capacity`、`set`,TED 侧死 API 已删。仍开放:Parent 的 `computeAndHoldBestCandidate`/`boundStrandedHold`/D1 重复跳没有 trace 覆盖;`ParentRunStarter:299` 的未绑定 Parent 图;`clearAllPending` 没有生产重置;C4(emulator 维度化,含 `LSPManager` 的 `instanceof MPLSResourceManager`)。
+
+## C4 完成(2026-10-06,emulator `cd05b21`,本地,未 push)
+
+**对原计划的修正**:计划写的是"emulator 资源管理器按维度插拔(现有 `MPLSResourceManager` 作为带宽维度的实现)"。核查表明 emulator 的 MPLS 一侧**没有带宽记账可以维度化**:`MPLSResourceManager.checkResources` 除下一跳缺失外恒接受,`reserveResources`/`freeResources` 只维护路径状态,PCE 是唯一的带宽权威;`ResourceManager` 接口本来就与维度无关(全部方法只接收 `LSPTE`)。真正泄漏的是 `LSPManager` 里两处 `resourceManager instanceof MPLSResourceManager`。
+
+**做了**:`ResourceManager` 新增 `holdsResourcesLocally()`(缺省 `true`,即谨慎地当作在节点上预留资源);`MPLSResourceManager` 覆盖为 `false`。`LSPManager` 的两处 `instanceof` 换成这个能力(重路由先装后拆 vs 先拆后装;`refreshPendingMplsPath` 的守卫),语义不变:原来任何非 MPLS 管理器(含测试替身)走"先拆后装",现在缺省 `true` 同样如此;`resourceManager == null` 时两处与原来一样。顺手更正了 `MPLSResourceManager` 里指向已删除 `MplsTedProjection` 的注释。新增 `MPLSResourceManagerTest`(9 个:接口能力与缺省、入口/中转/出口的下一跳解析、路径外节点拒绝、容量永不拒绝、reserve/free/orphan 清理的表)。emulator 共 98 个测试通过(1 个跳过)。
+
+**没有做**:`NetworkNode` 按 `TechnologyParameters` 选择管理器的分支没有改成按注册表工厂(它含 `UNKNOWN → System.exit`,不可测;WSON 的构造分支按你的决定保留);`WSONResourceManager` 未动(它仍是 emulator 里唯一真正在节点上预留资源的管理器,波长维度的 emulator 侧留给 W3);emulator 的 PCRpt 带宽回声(`NotifyLSP:170`)仍然没有测试,因为构造 PCRpt 需要完整的 `LSPManager`(数据库版本、报告库),不值得为一个读 `lspte.getBw()` 的两行代码搭这套夹具。
+
+**C3/C4 到此全部结束。**
