@@ -152,3 +152,16 @@ W4 原设计写"每种投影一个独立的 durable consumer",但:
 ## 9. 不做的
 
 OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁移、`runtime.db`(取决于 Q1)。
+
+## 10. 已确认的决定(2026-10-07,用户)
+
+| 问题 | 决定 |
+|---|---|
+| Q1 范围 | **只迁 `pce_state`**(事实、游标、投影);`runtime.db` 和冷库以后再说 |
+| Q2 Timescale | **先普通 Postgres + 按 run 分区**;Timescale 以后只对测量事实按需加,O4 不阻塞 |
+| Q3 租户隔离 | **只预留 `org_id` 列和角色,不启用 RLS 策略** |
+| Q4 环境 | **用户本机终端**跑 Postgres 与 live-NATS 测试(本机有 `postgresql@14`、`nats-server`、docker);沙箱里只做 SQLite 特征化测试、接口层、假端口 |
+| Q5 NATS 认证/集群 | **商业版阶段,本阶段不做** |
+| Q6 D5 | **真实 NATS 跑通之后才删**旧 HTTP 路径和 `TelemetryOutbox` |
+| 先做哪块 | **I2-a**:抽 `StatisticsStore` 接口 + SQLite 特征化测试 |
+
