@@ -149,3 +149,13 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 **发现(未处理)**
 - 经过这次改动,TED 侧的 `reserveMplsBandwidth/releaseMplsBandwidth/resetMplsBandwidth`(`SimpleTEDB`、`MultiLayerTEDB`)、`RouterId.adjustMplsReserved/resetMplsBandwidth`、`IntraDomainEdge.adjustMplsUnreserved/resetMplsUnreserved`、`BandwidthDimension.adjust/reserve/release/reset` 以及 `MplsOccupancyStore.reserve/release/reset` **在生产代码里没有任何调用者**(只剩注释和测试)。删除它们需要同时删/改 `RouterIdTest`、`MplsBandwidthCharacterizationTest`、`MplsOccupancyStoreTest` 的相应部分、`BandwidthDimensionTest`、`MultiLayerTEDBRcuTest`、`TedbJsonLoaderTest` 与 PCE 的 `LspResourceIndexTest`(1 处)等;这些测试钉住的是即将被删除的语义。
 - `ParentRunStarter.java:299` 用不带 store 的 `loadParentGraph(frame.topologyJson)`:Parent 的这份图的边是未绑定的(Parent 的 `apply` 旧路径对它生效)。后续 Parent 收敛时要弄清它是否仍被使用。
+
+## 删除 TED 侧已无调用者的 reserve/release/reset API(2026-10-06,topology `4904358`、PCE `cbec65f`,本地,未 push)
+
+**做了**:跨仓库 grep(topology、PCE、emulator、protocols、backend 的 main 与 test)确认,账本改为发布总数之后,下列代码在生产里没有调用者,已删除:`SimpleTEDB`/`MultiLayerTEDB` 的 `reserveMplsBandwidth`/`releaseMplsBandwidth`/`resetMplsBandwidth`(含按 `MplsTopology` 钉住的重载)、`RouterId.adjustMplsReserved`/`resetMplsBandwidth`(各两个重载)、`IntraDomainEdge.adjustMplsUnreserved`/`resetMplsUnreserved`、`BandwidthDimension.adjust`/`reserve`/`release`/`reset`/`releaseDetached`/`hasLink`、`MplsOccupancyStore.reserve`/`release`/`reset`/`pruneAbsent`。`ResourceDimension` 收缩为实际使用的 `id` 与 `capacity`(`set` 在 Parent 收敛时加入)。store 现在只有 `reserved`、`set`、`clear`、`size`、`linkId`。这也**去掉了未绑定边的旧账目路径**(原来在 `IntraDomainEdge`/`RouterId` 里重复实现的那一份),只剩 `Parent` 的 `apply` 还在用它。
+
+**测试**:为剩下的东西重写——`MplsOccupancyStoreTest`(7)、`MplsBandwidthCharacterizationTest`(10,用 `store.set` 钉住单位与取整链:76.543205 等)、`BandwidthDimensionTest`(4:容量取整与发布);删除钉住被删语义的测试(store 的 CAS 上限与并发 reserve、`RouterIdTest` 的预留上限、边界链路预留、Parent 外的 `MultiLayerTEDBRcuTest` 预留);`MultiLayerTEDBRcuTest`/`TedbJsonLoaderTest`/PCE 的两个测试改为经 store 的 `set` 表达同样的性质。
+
+**验证**:PCE 全量 1510 个,0 失败,21 个沙箱错误(基线);**域内与 Parent golden trace、并发压力测试仍逐字节重现基线 `a817645`**;topology 单元测试 61 个(`BGP4Peer` socket 集成测试照旧失败,基线);emulator 89 个。
+
+**净效果**:C3-2 起点到现在,topology 与 PCE 里删掉了约 1000 行(`FrameView` 及其重放、回滚、按键释放、三份重复的未绑定账目路径、store 的上限与 CAS 重试、`ResourceOverlay`),新增约 300 行(`ChargeBook` 与发布、`TedLocks`、`BandwidthDimension` 的键/容量、测试)。
