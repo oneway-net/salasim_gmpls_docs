@@ -165,6 +165,8 @@ augment "/if:interfaces/if:interface" {          // salasim-fault, config false
 
 ### 3.5 谁拥有拓扑实例
 
+> **已由 phase1-implementation-design 取代（F1，2026-10-06）**：下文单控制器的原文不再适用；拓扑实例的归属以 `phase1-implementation-design.md` D4/D5 为准（PNC 的原生 te-topology 排程由编译器生成、挂入 PNC，MDSC 合成多域抽象拓扑）。
+
 （2026-10-06 修订：本域拓扑实例由 PNC 拥有，MDSC 拥有由各 PNC 抽象拓扑组合的多域拓扑；以下为单控制器时的原文。）控制器（ACTN 的 MDSC）。理由：控制器已经是每租户一个、持有全部设备挂载；RFC 8795 的 te-topology 本来就是 MDSC 对 PNC 的接口；
 设备（emulator）不应也无法知道网络级的 link-id。实例来自运行的拓扑快照/调度（backend 编译器已持有 `nodes.json`、链路表），
 在部署时由 backend 经控制器 RESTCONF（RFC 8040）以 `ietf-network`/`te-topology` 的**配置数据**写入（RFC 8345 的 node/tp/link 是
@@ -254,6 +256,8 @@ agent-day 为区间（含测试；不含 169 部署与真实 SSH 联调的等待
 这量级是现有自定义通知（发布 ≈ 40 行 + relay）的一个数量级以上，但不是不可行，也没有阻塞项；不需要回头重新决定是否强制 YANG-push。
 
 ## 7. 现有链路的变更与同一变更集删除
+
+> **已由 phase1-implementation-design 取代（F1，2026-10-06）**：本节列出的旧链路（`link-state-changed`、`link-state-endpoint`、`InterfaceNames`、控制器 relay 的 5277 订阅、backend 的字符串 link 解析）已在 D1–F1 全部删除；“注入故障的 PUT 不变”一句过时，故障现经 `schedule-link-faults`。
 
 现链：emulator `NodeLinkStateApplier` → `operSink`（写 `oper-status`）+ `linkStatePublisher`（RFC 5277 `link-state-changed` 到流 `SALASIM`）
 → 控制器 `DeviceNotificationRelay`（`create-subscription` + resync 读 `ietf-interfaces`/`salasim-simulation`）→ `report-link-state` → PCE

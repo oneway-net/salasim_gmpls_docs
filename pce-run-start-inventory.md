@@ -357,6 +357,8 @@ How the PCE parses the DOM input: the handler receives a `ContainerNode`; `RunSt
 
 ### 10.4 Ordered steps
 
+> **Superseded (F1, 2026-10-06; see `phase1-implementation-design.md`).** The toggles described below no longer exist: `SALASIM_RUN_START_VIA` (typed MDSC calls are the only path), `SALASIM_PCE_FRAME_SOURCE` (the schedule is the only frame source) and the PCE `salasim.pce.netconf.runRpc.enabled` flag. The PCE routes `/sim/start`, `/sim/frames`, `/sim/clock`, `/sim/reset`, `/sim/release` and `RunStartConfigJson` are deleted; `GET /sim/status`, `GET /sim/faults/receipts` and the read-only `GET /sim/wall-clock` probe remain. The equivalence of the typed input with the retired JSON is frozen in `salasim_gmpls_backend/tests/golden/legacy-start-payloads.json`.
+
 Owners: **yang** = `salasim_gmpls_yang`, **pce** = `salasim_gmpls_pce`, **netconf** = `salasim_gmpls_netconf`, **backend** = `salasim_gmpls_backend`, **frontend** = `salasim_gmpls_frontend`, **controller** = `salasim_gmpls_controller`. Estimates are agent-days.
 
 | # | Owner | What changes, exactly | Proof | Revert | Days |
