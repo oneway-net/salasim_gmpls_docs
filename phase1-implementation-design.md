@@ -682,6 +682,7 @@ O11 的语义写死如下。
 | 12 | PCEP 私有 TLV `SEGMENT-LINK-TLV`（65523，PCRep 的 RP 对象）：子 PCE 对其回报路径每一跳声明时延与 SRLG（P-c，用户 2026-10-06 在 R-4 反例后选定） | PCEP 没有标准对象让子 PCE 回报路径各跳的 SRLG/时延；仅比较域间 SRLG 会漏判（反例测试 `CrossDomainSrlgCounterexampleTest`） | 若 PCEP 出现标准的 SRLG/路径属性回报对象则迁移 |
 | 9 | PNC 的原生拓扑只放内存，不写 MD-SAL | 没有 YANG 消费者 | 需要经 YANG 暴露原生拓扑时写入 |
 | 13 | `salasim-fleet:start-run-on-devices` 的输入叶子 `resume`（boolean，默认 false；E2，用户 2026-10-06 批准） | E2 之后 Backend 不再自己挂载节点，暂停后的节点 resume（重发 start-run）没有路径；fleet 的 start 失败会回滚，对 resume 不适用 | 同 fleet RPC 一起迁移 |
+| 14 | `salasim-capability`(整个新模块;目标架构 C1 草案,2026-10-06):交换技术/层/资源维度/目标函数/算法的注册表结构与部署的技术选择 grouping;注册表内容以 RFC 9195 实例数据发布(`instance-data/salasim-capabilities.json`) | 标准没有"平台支持哪些技术、各用哪个 PCE 算法"的模型;交换能力与编码复用 `ietf-te-types` 的 identity(`switching-capabilities`、`lsp-encoding-types`),层间关系不在此处(留给 `ietf-te-topology` 的 supporting/underlay) | 无标准可替代的部分是注册表本身;若 `ietf-te` 或 TE 拓扑模型以后覆盖"技术与资源维度",再迁移 |
 
 ## 12. 估算汇总（agent-day）
 
