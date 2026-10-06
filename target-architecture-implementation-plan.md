@@ -1,6 +1,6 @@
 # 目标架构实施顺序与依赖(WSON + MPLS + 跨层)
 
-状态:**计划,未实施,未获批**。依据 `target-architecture-decisions-2026-10.md`(D1–D16)。
+状态:**计划,未实施,未获批**(H1 已完成;H2 已取消:WSON 一层代码全部保留)。依据 `target-architecture-decisions-2026-10.md`(D1–D16)。
 每个阶段单独得到用户批准后才开工;不 push、不部署、不碰 169(F3 另有手册)。
 工作量是**粗估(agent-天,±50%)**,用来排序,不是承诺;凡标"待核实"的前提没验证前不得当成事实。
 
@@ -15,7 +15,7 @@
 ```
 G0 Phase 1 收尾(F3 + 远端/分支)──────────────────────────────────────────────┐
                                                                                │
-H 清理(可与 G0 并行,互相独立):H1 删旧 OSPF  H2 删旧 WSON 类  H3 悬挂引用     │
+H 清理(可与 G0 并行,互相独立):H1 删旧 OSPF  H2(已取消:保留 WSON)  H3 悬挂引用     │
         │                                                                      │
 P 平台地基:P1 错误语义 ─ P2 构建 manifest ─ P3 Helm/Kustomize ─ P4 lighty 持久化验证
         │            (P3 依赖 P2)                                  │
@@ -31,9 +31,9 @@ I 基础设施(独立轨道,大):I1 JetStream  I2 Postgres/Timescale  I3 OSPF �
 ```
 
 硬依赖:
-- C3 依赖 C1(维度来自能力模型);W1–W3 依赖 C3、H2;L2 依赖 W2(没有光层可算就没有可分的层);L3 依赖 P1、P4、L1、L2。
+- C3 依赖 C1(维度来自能力模型);W1–W3 依赖 C3;L2 依赖 W2(没有光层可算就没有可分的层);L3 依赖 P1、P4、L1、L2。
 - P3 依赖 P2;I2 之前的统计与 telemetry 改动要避免写两遍,见 §4。
-- H1、H2 之前必须做"依赖核查"(§3 H),这是 D15/D16 的前提。
+- H1 之前必须做"依赖核查"(§3 H)。D16(删旧 WSON 类)已被用户撤销:WSON 一层代码全部保留。
 
 ## 2. 阶段 G0:Phase 1 收尾(前置,不属于本计划实施)
 
@@ -46,7 +46,7 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 | 步骤 | 内容 | 前置核查(停问清单 #2) | 估 |
 |---|---|---|---|
 | H1 | 删除旧 OSPF:topology 与 PCE 的 `tedb/ospfv2/*`、两个 `TopologyUpdaterThread`、emulator `transport/ospf/*`、`TopologyReaderOSPF` 中对 updater 的创建、`IS_OSPF_MODE`/`OSPFSession` 配置项;保留 `OspfApiClient`、`OspfFaultService`(可选保真度入口) | 列出所有引用;`MultiLayerTEDB` 的 OSPF 分支("走不到这")同步删;生成配置与 `scenario_compiler.py:157,4153` 一并改;确认没有测试之外的运行时依赖 | 3 |
-| H2 | 删除休眠 WSON:PCE `algorithms/wson/*`(~40 类)、`SP_FF_RWA`、`DomainPCEServer.java:620` 的 `getManagerByOfCode(1001)` 与 `notifyAlgorithms`、`PCEPUtils.java:76` 一带、`LspResourceIndex.java:825` 的 WSON 推断、emulator `WSONResourceManager`(`NetworkNode.java:228`)、backend `isWSONAlgorithm`;**保留** `BitmapLabelSet`/`AvailableLabels`/`DWDMWavelengthLabel` 与 `WSONInformation` 的数据结构(W1 重用或改写) | 同上;`MplsOnlyModeTest`、`PCEServerConfiguration.xml` 里被注释的 WSON 规则一并清理 | 3 |
+| H2 | **已取消(用户 2026-10-06:WSON 一层的代码都要保留)** | — | 不删 `algorithms/wson/*`、WSON 资源管理器、TEDB 波长 API、`WSONInformation`。原有的依赖核查结果保留在 `h2-wson-dependency-audit.md` 供 W 阶段参考 | — |
 | H3 | 清悬挂引用:`PceWebhookSenderTest.java:318` 的过期 Javadoc;compiler `_append_edge_common` 的 `AvailableLabels` 占位块与 PCE 判空(验证 `FileTEDBUpdater` 能否不带 label set);文档里残留的 WSON 描述 | — | 1 |
 
 验收:各仓库全量测试与基线一致(沙箱基线:backend 2 失败、PCE 21 沙箱错误 + 1 已知不稳定);`grep` 不再有被删符号。
@@ -64,7 +64,7 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 
 | 步骤 | 内容 | 依赖 | 估 |
 |---|---|---|---|
-| C1 | `salasim-capability.yang`:交换技术(MPLS/WSON)、层、算法、资源维度(带宽、波长集合)、每项的约束(例如 WSON 需要的标签栅格)。代码生成:Java binding、Python 常量、前端选项。登记 §11 | H2(先删旧类,避免模型迁就旧代码) | 4 |
+| C1 | `salasim-capability.yang`:交换技术(MPLS/WSON)、层、算法、资源维度(带宽、波长集合)、每项的约束(例如 WSON 需要的标签栅格)。代码生成:Java binding、Python 常量、前端选项。登记 §11 | 无(H2 已取消) | 4 |
 | C2 | Backend 改读能力模型:替换 `SWITCHING_OBJECTIVE_FUNCTION`/`SWITCHING_ALGORITHM_NAME`/`VALID_SWITCHING_TYPES`、前端 `switching-types.js`;PCE 的 `MplsOnlyMode`(`util/` 与 emulator 两份)改为由清单下发的能力开关,而不是各写一份常量 | C1 | 4 |
 | C3 | **账本维度化(MPLS 零行为变化)**:LSP-DB/账本接口抽象出"资源维度"(准入、占用、释放、对账),把现有带宽实现整体搬成第一个维度;`MplsPathComputation` 核心按维度调用。**验收是回归**:跨快照、precompute、SRLG、MIN_DELAY 的现有测试全绿,且同 seed 的算路结果逐 LSP 一致 | C1 | 8 |
 | C4 | emulator 资源管理器按维度插拔(现有 `MPLSResourceManager` 作为带宽维度的实现) | C3 | 3 |
@@ -99,7 +99,7 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 
 ## 4. 推荐顺序(串并结合)
 
-1. **并行起步(不碰 Phase 1 运行链路)**:H1、H2、H3;P1;P2;C1;P4 的验证(一旦有 socket 环境)。
+1. **并行起步(不碰 Phase 1 运行链路)**:H1(已完成)、H3;P1;P2;C1;P4 的验证(一旦有 socket 环境)。
 2. **C2 → C3 → C4**:C3 是整条线的结构性风险点,必须保证 MPLS 零行为变化,先做完再引入 WSON。
 3. **F3 通过后**:L1 → W1 → W2 → W3/W4(W 与 L1 可交错);P3 在 P2 之后任意时点。
 4. **L2 → L3 → L4 → L5**:L3 在 P4 结论之后。
@@ -118,7 +118,7 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 |---|---|
 | C3 账本抽象改变 MPLS 行为 | 同 seed 逐 LSP 对比作为验收;分支上做,不通过不合并 |
 | D4(lighty 持久化)被 P4 推翻 | P4 提前做;备选是 MDSC 自己落盘事务日志;这是改动 MDSC 事务语义,触发停问 |
-| 删除旧 WSON/OSPF 误伤 | H1/H2 先依赖核查再删;删完全量测试 + grep |
+| 删除旧 OSPF 误伤 | H1 已做:先依赖核查再删;删完全量测试 + grep;WSON 一层按用户决定保留 |
 | 租户网关不接受 Helm 渲染 | P3 先核实;备选 Backend 内渲染 manifest 再 apply,同样过 kubeconform |
 | 波长连续性算错(旧 AURE 教训) | W2 先写"交集 + 选择"的单元与属性测试,再接核心 |
 | 沙箱无 socket、`~/.m2` 不可写 | 验证项标"未验证";构建用私有 `-Dmaven.repo.local` 副本(顺序 yang → protocols → topology → netconf → 其余) |
@@ -135,7 +135,7 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 | 步骤 | 状态 | 备注 |
 |---|---|---|
 | H1 | 完成(本地) | 见 `h1-ospf-dependency-audit.md` 的「实施结果」;各仓库本地提交,未 push/部署;含对核查的一处修正(`RedisDatabaseHandler` 被 emulator 使用,已恢复) |
-| H2 | 依赖核查完成(只读) | 见 `h2-wson-dependency-audit.md`;建议拆 H2a(可做)与 H2b(暂缓,与 W1 冲突);四个决定待用户确认 |
+| H2 | 已取消 | 用户决定保留 WSON 一层全部代码;核查文档保留作参考 |
 | H3 | 未开始 | |
 | P1–P4 | 未开始 | |
 | C1–C4 | 未开始 | |

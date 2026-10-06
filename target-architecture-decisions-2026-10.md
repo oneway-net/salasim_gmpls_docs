@@ -22,7 +22,7 @@ SSON 已完全移出平台。本文记录交互确认的决策;**只是决策,�
 | D13 | M8 遥测 | NATS JetStream | 设计文档 W4 |
 | D14 | M11 存储 | Postgres + Timescale | 开发期直接改形态,不写兼容层 |
 | D15 | M10 旧 OSPF 代码 | 删除(tedb/ospfv2 ×2、TopologyUpdaterThread ×2、emulator transport/ospf),需要时重写 | 保留 OspfApiClient/OspfFaultService 作可选保真度入口;W5 对应步骤此前未做 |
-| D16 | 休眠 WSON 旧类 | 删除,仅保留 BitmapLabelSet 等协议/标签编码 | PCE ~40 个算法类、空实现 SP_FF_RWA、emulator WSONResourceManager;确认无人依赖再删 |
+| D16 | 休眠 WSON 旧类 | **已撤销(2026-10-06,用户:WSON 一层的代码都要保留)**。原决定是删除、仅留标签编码;现在 `algorithms/wson/*`、`WSONResourceManager`、TEDB 波长 API、`WSONInformation` 全部保留 | W1/W2/W3 设计时再评估是改造还是重写,**不再预设删除**;`GenericLambdaReservation` 等跨包依赖保持原状 |
 
 ## 核查结论(只读,2026-10-06)
 

@@ -69,3 +69,7 @@ H2a 的实施尚未开始,等用户批准。
 
 决定 4 改为:**emulator `WSONResourceManager` 与 `TechnologyParameters.WSON` 在 H2a 里保留**,到 W3 设计时再决定改造还是删除;在类上加 DORMANT 标记(不可用、保留作 W3 参考、去向待 W3)。原因:它是仓库里唯一的 emulator 侧波长资源管理参考实现;删它对 MPLS 路径没有收益;删除要连带改 `NodeInformation:177` 的缺省分支与 API 的 `technologyName`,有行为风险;其内容是否符合"统一账本 + 可插拔维度"接口未细读验证。
 H2a 因此缩小为:迁出 `GenericLambdaReservation`、删 PCE `algorithms/wson/` 包与 `DomainPCEServer`/`PCEPUtils`/`SimpleTEDB.notifyAlgorithms` 管道代码、清 XML 中被注释的 WSON 规则、去掉 backend `isWSONAlgorithm`、给 `WSONResourceManager` 加 DORMANT 标记、同步文档。
+
+### 最终(同日):H2 取消
+
+用户决定 **WSON 一层的代码都要保留**,H2(含 H2a、H2b)整体取消,不做任何删除、迁出或 DORMANT 标记。本文档保留为 W 阶段的参考:它记录了 WSON 代码与 MPLS 运行路径的耦合点(`GenericLambdaReservation`、MPLS 预计算对 `WSONInformation`/波长回调的依赖、`TEDListener` 机制、`AutonomousClockThread` 的 WSON 分支、`LSPManager.rerouteBreakBeforeMake` 的非 MPLS 分支),W1 设计时需要据此判断改造还是重写。
