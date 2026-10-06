@@ -356,8 +356,10 @@ CREATE TABLE stats.run_input (run_id text PRIMARY KEY, inconsistency_version big
 
 **要在本机量的数据**:`python3 tools/measure-run-volume.py <pce_state.sqlite3>`(只读)——对一个真实 run 的库(用 `sqlite3 … ".backup copy.sqlite3"` 拷出来,不要直接读正在写的文件)给出每张表每个 run 的行数与载荷字节,尤其是 `pce_link_snapshot_batches`(`metrics_json`,逐链路时延表所在)和 `simulation_slice_results`。O3 的分区集和 O13 的取舍都等这个数。
 
-## 12. 需要你重新确认的
+## 12. 已确认(2026-10-07,用户)与待办
 
-1. **撤回 `link_sample`**(O1):原始链路在批次完成后就该删(现有做法),只保留批次上的冻结指标。你之前选的"每条链路一行"是基于我错误的"长期保留、可按链路查历史"的说法;**撤回可以吗?**
-2. **`slice_result` 拆成"头 + 体"**(O2)。接受吗?(它改变 slice 发布与 `list_slice_index` 的实现,收益是事件路径不再读整个 23 KiB+ 的 JSON。)
-3. 能不能在**真实 run 的 `pce_state.sqlite3`** 上跑一次 `tools/measure-run-volume.py`?它决定哪几张表要分区(O3)。
+| 问题 | 结果 |
+|---|---|
+| 撤回 `link_sample`(O1):chunk 临时、批次完成即删,只留 `link_batch.metrics` | **已确认** |
+| `slice_result` 拆成头 + 体(O2),`status` 只留一处,`content_hash`/`domain_ids`/pending 标志发布时算好 | **已确认** |
+| 在真实 run 的 `pce_state.sqlite3` 上跑 `tools/measure-run-volume.py`(决定 O3 的分区集、O13 要不要做) | **待办(需要你在本机或从 169 拷库后运行)**;结果出来之前,分区集按默认 5 张(`fact_index`、`tunnel_update`、`protection_update`、`metric_fact`、`delay_sample`)写,其余表是普通表 |
