@@ -195,3 +195,33 @@ OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁
 3. 控制面存储(`runtime_store`、`service_store`、`tunnel_store`、`operations`、`simulation_run_store`,约 9.7k 行)与统计存储一起迁;**"跨库提交"特殊逻辑**(`runtime_store.py:346`)随之删除。
 估算见第 11 节:I2 合计由约 22–31 天上调到约 **34–49 天**(+12–18 天,±50%)。
 
+## 13. SQL 方言清单(2026-10-07,静态计数;方案 A 的工作量依据)
+
+范围:`v3_statistics.py`、`runtime_store.py`、`service_store.py`、`tunnel_store.py`、`operations.py`、`simulation_run_store.py`、`pce_state_schema.py`、`configuration_profile_store.py`、`db_settings.py`、`api_helpers.py`、`topology_clock_service.py`(其余几个文件为 0)。计数是正则命中数,不是语句数,只用来排序。
+
+| 特性 | 命中 | 到 Postgres 的处理 |
+|---|---|---|
+| `?` 占位符(qmark)的 `execute` | **556** | psycopg 用 `%s`/命名参数:要么统一走一层薄适配(`?`→`%s`,注意字符串字面量里的 `?` 和 `%`),要么逐处改。**建议适配层 + 测试**,不手改 556 处 |
+| `json_extract(...)` | **115**(v3 39、runtime_store 40、service_store 21) | `->>`/`#>>`/`jsonb_path_query`;**SQLite 的 JSON 存的是文本**,迁到 `jsonb` 之后数值/布尔/空值的比较语义会变(`json_extract` 返回 SQL 标量,`->>` 恒为 text,要显式 `::bigint`) |
+| `PRAGMA` | 45(多在 `db_settings`、`pce_state_schema`、`runtime_store` 的连接初始化) | 删除/改为连接参数与 `SET`;`journal_mode`/`synchronous`/`busy_timeout`/`mmap_size`/`wal_checkpoint` 在 PG 没有对应物 |
+| `lastrowid`/`rowcount`/`changes()` | 29 | `RETURNING`;`rowcount` 语义对 `INSERT … ON CONFLICT DO NOTHING` 与 SQLite 一致,对 `executemany` 不一致,要逐处看 |
+| `ON CONFLICT` | 24 | 已是 PG 兼容写法,但 SQLite 允许 `ON CONFLICT` 不带目标(PG 的 `DO NOTHING` 也允许,`DO UPDATE` 必须带目标列)——要核对 |
+| `sqlite_master` / `sqlite_*` | 17 | `information_schema`/`pg_catalog`;用于判表是否存在、列检查,是迁移工具的活 |
+| `ATTACH` | 15 | 同库两个 schema;连接初始化里 `ATTACH`/`DETACH` 和读写锁相关逻辑删除 |
+| `strftime`/`datetime`/`julianday` | 13 | `to_char`/`timestamptz` 运算;**SQLite 里时间是文本**,迁到 `timestamptz` 要决定哪些列变类型 |
+| `INSERT OR IGNORE` | 12 | `ON CONFLICT DO NOTHING` |
+| `json_object`/`json_array`/`json_group_array` | 9 | `jsonb_build_object`/`jsonb_agg` |
+| 部分索引 `CREATE INDEX … WHERE` | 9 | PG 支持,语法相同,谓词要核对 |
+| `BEGIN IMMEDIATE` | 7 | 事务 + 行锁/咨询锁(见 4.2) |
+| `json_valid` | 6 | `CASE WHEN … ~ …` 不可靠;改为列类型 `jsonb`(非法即写入失败)——**行为变化**,要看有没有依赖"脏 JSON 也能存" |
+| `executescript` | 6 | 迁移脚本(纯 SQL 文件)执行器 |
+| `json_each`/`json_tree` | 5 | `jsonb_array_elements`/`jsonb_each` |
+| `AUTOINCREMENT` | 5 | `generated always as identity` |
+| `COLLATE NOCASE` | 4 | `citext` 或 `lower()` 索引 |
+| `rowid` | 3 | 显式 identity 列 |
+| `CREATE TRIGGER` / `CREATE VIEW` | 2 / 1 | PG 触发器是函数 + `CREATE TRIGGER`,要重写 |
+
+**这份清单暴露的、设计里原来没写的最大风险:SQLite 的弱类型。** SQLite 的列只有"类型亲和性",整数列里可以存文本、布尔存成 0/1、时间存成 ISO 文本;Postgres 严格类型,同样的代码会在**比较、排序、`IN`、`ORDER BY`、`SUM`** 上露出以前被亲和性掩盖的错误(比如 `WHERE seq = ?` 传了字符串)。所以特征化测试要**覆盖类型边界**(值的 Python 类型 × 列类型),Postgres 阶段先用**严格模式的 schema + 现有 556 条语句**跑一遍,把类型错误全部暴露出来,而不是在运行时才发现。
+
+**更正第 11 节的一句话**:"用 `RuntimeInputs` 端口收口 `rt.` 的 11 处读"这一步**取消**。方案 A 下 `rt` 与 `pce` 是同一个 Postgres 库的两个 schema,存储对 `rt.` 的读(包括 `rt.fault_delivery_records` JOIN `pce_fault_impacts` 这一处)原样保留,只做方言转换;端口只有在 B 方案下才有意义。
+
