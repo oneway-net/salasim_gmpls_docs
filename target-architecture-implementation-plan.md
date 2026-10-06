@@ -137,12 +137,14 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 | H1 | 完成(本地) | 见 `h1-ospf-dependency-audit.md` 的「实施结果」;各仓库本地提交,未 push/部署;含对核查的一处修正(`RedisDatabaseHandler` 被 emulator 使用,已恢复) |
 | H2 | 已取消 | 用户决定保留 WSON 一层全部代码;核查文档保留作参考 |
 | H3 | 未开始 | |
-| P1–P4 | 未开始 | |
+| P1 | 完成(本地,2026-10-07) | `run/AppTag`(词表 + retryable/permanent/unknown 三分类,唯一识别/生成标签的地方);`DomRpc` 与全部 `invalid-value:` 生产者改用它;`run-status/last-error` 增加 `class`;`AppTagTest` 7 个,controller 全量 211 个通过。**发现并修正了 D11 的前提**:ODL netconf 11.0.0 的服务端对任何失败的 RPC 都回 `operation-failed`,既不写也不读 `error-app-tag`(NETCONF-793 未做),所以"线上 error-app-tag"做不到;标签只能是 error-message 的前缀,AppTag 把这条约定收口。PCE 仓库的 `PceRunRpcs`/`PceNetconfManagement` 还在手写 `invalid-value:` 前缀(文本一致,未改) |
+| P2、P3 | 阻塞 | P2 等 G0 的远端/分支决定(用户);P3 依赖 P2,且租户网关能否执行 Helm 产物待核实 |
+| P4 | 阻塞 | 需要有 socket 的环境(用户终端或集群),沙箱里 Pekko 绑不了端口 |
 | C1 | 完成(草案已被采用,本地提交) | yang `salasim-capability.yang` + `instance-data/salasim-capabilities.json`;§11 登记 #14;注册表含 default-objective-function、parent-algorithm-name |
 | C2 | 完成(本地,部分范围见备注) | **做了**:yang jar 随包发布注册表;topology `es.tid.capability.Capabilities`(读注册表与 `salasim.enabled.technologies`,默认 mpls,不支持的技术拒绝启用);PCE `MplsOnlyMode` 的 OF 码/算法族改读注册表(并去掉 retired-1002 特例);emulator `MplsOnlyMode` 改读注册表默认目标函数;backend `capability_registry.py`,`scenario_compiler` 的 `SWITCHING_OBJECTIVE_FUNCTION`/`VALID`/`ALLOWED`/`SWITCHING_ALGORITHM_NAME`/`PARENT_ALGORITHM_NAME` 全部派生,附注册表副本与 YANG 仓库文件的一致性测试。**测试**:topology 5 个新测试;PCE 1496/0 失败/21 沙箱错误(基线);emulator 89 通过;backend 2249 通过 + 2 个基线失败。**未做/有意留下**:(1) 编译器尚未把 `-Dsalasim.enabled.technologies` 渲染进 PCE/emulator 的 JAVA_OPTS(现在只有 MPLS 可部署,Java 缺省即 mpls;第二种技术 supported 时要渲染,drift 测试里已按"常量"登记,届时改为 orchestration);(2) frontend `switching-types.js` 只是 i18n key 映射,不含能力事实,未改;(3) `OF_WSON`、`OF_LEGACY_MPLS`(1000 别名)、`isWSONAlgorithm` 保留(WSON 一层代码保留);(4) emulator 只接受注册表的默认目标函数(与改前一致:只接 1000/1003,不接 1004/1005)——这是否合理未验证,见备注。 |
 | C3 | C3-0、C3-1、C3-2(域内,**含账本权威 + 拆除 FrameView + 删除 TED 侧死 API**)与 Parent 收敛(经维度 set/capacity)完成(本地);C3-3 完成(无可再替换的充电读取);**C3 结束**;**Parent 语义设计已写** `c3-parent-ledger-semantics.md`(待用户确认:统一做在维度层而非合并账本类,Parent 部分约 5–7 天,整个 C3 约 15–19 天);C3-2 起未开始。核查见 `c3-ledger-audit.md`;C3-0 安全网:topology 30 个特性测试、PCE 域内与 Parent 两套 golden trace(基线 PCE `a817645`)、并发压力测试,变异检查已验证能抓到偏差 | 见 `c3-ledger-audit.md`:今天没有单一账本(域内 `LspResourceIndex`+`MplsOccupancyStore` / Parent 的 `ParentMplsBandwidthUpdater` / WSON 绕过账本);原估 8 天偏低,加安全网(golden trace)后约 12–15 天;四个决定已确认:**范围含 Parent 账本**(用户选择,估时升至约 20–28 天)、并行访问器分步替换、golden trace 在重构前录制、emulator `instanceof` 留给 C4 |
 | C4 | 完成(本地) | 见 `c3-ledger-audit.md` 末节:emulator MPLS 无带宽记账可维度化,实做的是用 `holdsResourcesLocally()` 取代两处 `instanceof`、补 `MPLSResourceManagerTest`;WSON 管理器与技术选择分支未动 |
-| MDSC 可恢复性 | 设计已写,待用户确认 | 见 `mdsc-recoverability-design.md`:今天 MDSC/PNC 没有事务状态,真正的缺口是 3 处 SILENT-WRONG(MDSC 或 PNC 在 run 中途重启)和部分 commit;建议先做 M0+M1(约 5 天)再做持久化 |
+| MDSC 可恢复性 | M0–M3 + 全量重放 + Backend 摘要完成(本地,2026-10-07);M4(Backend 对账)的轮询部分已含在 M1,M5(datastore 存储)等 P4 | 见 `mdsc-recoverability-design.md`:今天 MDSC/PNC 没有事务状态,真正的缺口是 3 处 SILENT-WRONG(MDSC 或 PNC 在 run 中途重启)和部分 commit;建议先做 M0+M1(约 5 天)再做持久化 |
 | W1–W5 | 未开始 | |
 | L1–L5 | 未开始 | |
 | I1–I3 | 未开始 | |
