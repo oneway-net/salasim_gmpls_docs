@@ -25,7 +25,7 @@
 | R2 | 序号、毫秒时间、字节数、带宽 = `bigint` | SQLite 的 `INTEGER` 是 64 位;`int4` 会在带宽(bit/s)上溢出 |
 | R3 | `INTEGER 0/1` 标志 → `boolean`,删掉 `CHECK (x IN (0,1))` | 访问代码里的 `0/1` 要改成 `True/False`(psycopg 自动适配) |
 | R4 | 文本 ISO 时间 → `timestamptz`;sim 时间(毫秒)保持 `bigint` | 摄入时 `datetime.fromisoformat` 解析;**不能**把"sim 时间戳的 ISO 字符串"和"墙钟时间"混成一种类型——二者在 schema 里是不同列 |
-| R5 | `*_json TEXT` → `jsonb`(列名去掉 `_json` 后缀只在**新**代码里做;迁移期间保持原名,避免一次改两件事) | `jsonb` 会改键序、去重复键、归一数字格式:**任何依赖原文字节的逻辑**(只有 `slice` 的 content key,见下)要在 Python 里用 `json.dumps(sort_keys=True)` 重新计算,不依赖数据库的文本形式 |
+| R5 | `*_json TEXT` → `jsonb`(列名去掉 `_json` 后缀只在**新**代码里做;第一版保持原名,避免一次改两件事) | `jsonb` 会改键序、去重复键、归一数字格式:**任何依赖原文字节的逻辑**(只有 `slice` 的 content key,见下)要在 Python 里用 `json.dumps(sort_keys=True)` 重新计算,不依赖数据库的文本形式 |
 | R6 | `AUTOINCREMENT` → `bigint GENERATED ALWAYS AS IDENTITY` | 所有"隐式 rowid 顺序"(`ORDER BY t.rowid`)改为显式 identity 列 |
 | R7 | `text + CHECK` 而不是 PG 枚举 | 见 0.2 |
 | R8 | 事实表主键 = `(run_id, message_id)`,而不是 `message_id` | 分区表的唯一约束必须含分区键;`message_id` 本来就带 run 前缀,摄入时 `run_id` 也已知 |
@@ -38,7 +38,6 @@
 -- 001_roles_schemas.sql  (以 salasim_owner 执行)
 CREATE SCHEMA rt   AUTHORIZATION salasim_owner;   -- 控制面
 CREATE SCHEMA pce  AUTHORIZATION salasim_owner;   -- 统计事实、游标、投影
-CREATE TABLE public.schema_migrations (version int PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now(), name text NOT NULL);
 
 GRANT USAGE ON SCHEMA rt, pce TO salasim_app, salasim_ro;
 ALTER DEFAULT PRIVILEGES IN SCHEMA rt  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO salasim_app;
@@ -48,8 +47,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA pce GRANT SELECT ON TABLES TO salasim_ro;
 ALTER DEFAULT PRIVILEGES IN SCHEMA rt, pce GRANT USAGE, SELECT ON SEQUENCES TO salasim_app;
 ```
 
-- 一个库 `salasim`。角色:`salasim_owner`(只在迁移时使用)、`salasim_app`(后端运行时:DML,加上对 `pce.ensure_run/drop_run` 的 `EXECUTE`;`pce.drop_run` 需要 `DROP`,所以这两个函数 `SECURITY DEFINER`,属主 `salasim_owner`,函数内固定 `search_path`)、`salasim_ro`(只读)。
-- 迁移:`public.schema_migrations` + 一个很小的执行器(按文件名顺序执行 `db/migrations/NNN_name.sql`,每个文件一个事务)。**只有基线 v1**,没有旧库升级脚本。密码不进仓库(连接串来自环境/Secret 文件,与 NETCONF 密码同一做法)。
+- 一个库 `salasim`。角色:`salasim_owner`(只在建库时使用)、`salasim_app`(后端运行时:DML,加上对 `pce.ensure_run/drop_run` 的 `EXECUTE`;`pce.drop_run` 需要 `DROP`,所以这两个函数 `SECURITY DEFINER`,属主 `salasim_owner`,函数内固定 `search_path`)、`salasim_ro`(只读)。
+- **没有迁移机制**(按"新产品、不做数据库迁移"):`db/schema/*.sql` 是**建库脚本**,只对一个**空库**按文件名顺序执行(`db/apply.sh`,库里已有表就拒绝执行);没有 `schema_migrations` 表、没有版本号、没有升级脚本、没有执行器。开发期 schema 变了就**改文件、重建库**。等产品真有需要保留的数据时,再决定要不要引入迁移工具(那是以后的决定,不在本阶段)。密码不进仓库(连接串来自环境/Secret 文件,与 NETCONF 密码同一做法)。
 - `search_path` 不依赖默认:代码里一律写 `rt.`/`pce.` 前缀(这也让现在 `runtime_store` 里的 `pce.` 限定写法原样保留)。
 
 ## 3. 按 run 分区
@@ -326,10 +325,10 @@ SQLite 的"单写连接 + `RLock` + `BEGIN IMMEDIATE`"让全库串行,所以今�
 
 **需要新增的契约(第 15 节缺口,I2-b/c 里写)**:投影(`service_current`/`tunnel_current` 经 `rt` JOIN 的服务列表带实时状态,含 `services_v` 的 `hold_down_until` 边界)、清理、并发(上一节 a–e)、`payloadDigest` 不符 → `INVALID`、物理链路可用性的输入行 → 输出 JSON。
 
-## 9. 迁移文件布局(建议)
+## 9. 建库脚本布局(建议)
 
 ```
-salasim_gmpls_backend/db/migrations/
+salasim_gmpls_backend/db/schema/
   001_roles_schemas.sql            -- 第 2 节
   002_pce_partition_helpers.sql    -- 第 3 节
   010_pce_streams.sql              -- 4.1
@@ -341,12 +340,14 @@ salasim_gmpls_backend/db/migrations/
   021_rt_operations.sql
   022_rt_topology.sql
   023_rt_delivery_and_clock.sql
-db/migrate.py                      -- 按文件名顺序、每文件一个事务;只前进,不回退
+db/apply.sh                        -- 对空库按文件名顺序 psql -f;库里已有表就拒绝
 ```
+
+文件拆开只是为了读和审;它们合起来就是"当前 schema"。**没有版本、没有升级路径**。
 
 ## 10. 实现顺序与验证(用户本机终端)
 
-1. **装 DDL**:把第 2–5 节整理成 `db/migrations/*.sql`,在本机 `postgresql@14` 上 `createdb salasim_test && python db/migrate.py`,**逐个修正语法与约束错误**(这一步必然会有:这些 DDL 没跑过)。我写、你跑、把错误贴回来。
+1. **装 DDL**:把第 2–5 节整理成 `db/schema/*.sql`,在本机 `postgresql@14` 上 `createdb salasim_test && db/apply.sh salasim_test`(每次改了文件就 `dropdb` 重建),**逐个修正语法与约束错误**(这一步必然会有:这些 DDL 没跑过)。我写、你跑、把错误贴回来。
 2. **`pce.ensure_run`/`drop_run`**:在 psql 里跑一遍"建分区→插入→`EXPLAIN` 确认分区裁剪→drop"。
 3. **`StatisticsStore` 的 Postgres 实现(I2-c)**:`ingest_*` + 游标 + 拒绝日志,用已有 34 个契约测试验证;并发契约一起写。
 4. **投影与 slice 封账(I2-d)**。
