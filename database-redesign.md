@@ -6,15 +6,15 @@
 
 "丢掉历史包袱"我是这样理解的:**行为契约不动**(幂等、批次前缀提交、序号游标/缺口/墓碑、slice 封账条件,这些是产品行为,34 个契约测试钉着);**存储形态全部重来**——不再逐表移植,而是问"这份数据凭什么存在、谁是权威、谁写谁读"。
 
-审计里的 D1–D6 我按建议**全部采纳**,其中 D4、D5 会影响 API 层与数据保留,标了"待你确认"。
+审计里的 D1–D6 全部采纳。**2026-10-07 用户已确认 D4、D5 及另外三项(第 10 节)。**
 
 | 审计项 | 决定 |
 |---|---|
 | D1 服务状态三种表示 | `ctl.service` **不存状态**;当前状态只有一个来源 `stats.service_current`,经视图 `ctl.service_state_v` 暴露(无投影 = `DRAFT`/`STOPPED`);`derived_state_cached`、`services_v` 删除 |
 | D2 序号所有权靠 7 表 `UNION ALL` | 统一的 `stats.fact_index`(主键 `(run_id, pce_id, stream, sequence)`),所有事实先在这里登记;`receipts`/`tombstones`/`_STREAM_SOURCES` 删除 |
 | D3 修订号触发器 + 哨兵行 | 触发器全删;`stats.slice_revision` 每事务由应用 bump 一次;run 级的 inconsistent 信号单独存(`stats.run_input`),不再用 `snapshot_index=-1`;slice **发布**必须 bump(它是后续 slice 的输入),写成明确的契约(第 7 节) |
-| D4 `deployment_id` 冗余到每张事实表 | **删除**;事实/投影/slice 结果只认 `run_id`;`ctl.run.deployment_id` 是唯一的 run→deployment 映射(**待你确认**:API 按 `deployment_id` 做作用域校验的地方改为经 `ctl.run` 查) |
-| D5 `operations` 等与 run 的关系 | `ctl.operation`、`ctl.fault_delivery`、`ctl.pce_delivery_log` 是**历史/审计记录**:带 `run_id` 但**不设外键**,run 被清理后保留(**待你确认**:如果你希望它们随 run 删除,把 `run_id` 改成外键 + `ON DELETE CASCADE` 即可,一行的事) |
+| D4 `deployment_id` 冗余到每张事实表 | **删除**;事实/投影/slice 结果只认 `run_id`;`ctl.run.deployment_id` 是唯一的 run→deployment 映射;API 按 `deployment_id` 做作用域校验的地方改为经 `ctl.run` 查(**已确认**) |
+| D5 `operations` 等与 run 的关系 | **随 run 级联删除**(**已确认**):`ctl.operation`、`ctl.fault_delivery`、`ctl.pce_delivery_log` 的 `run_id` 是外键 `ON DELETE CASCADE`;清理一个 run 就把它们连带清掉(`pce` 侧靠 `DROP PARTITION`)。**代价**:run 清理后审计记录也没了——如果以后需要独立的审计留存,要另建审计存储,不在这些表上做 |
 | D6 文本时间 | 全部 `timestamptz`;sim 时间(毫秒偏移)`bigint` |
 
 另外我在重新设计中**主动做的**(审计没要求,但"丢包袱"应该做):
@@ -30,9 +30,9 @@ cfg.profile                      可复用的配置档案(预留 org_id)
 
 ctl.deployment ──< ctl.run ──< ctl.service ──< ctl.service_tunnel >── ctl.tunnel
       │              │              (意图)          (绑定)             (标识 + 控制面生命周期)
-      │              ├──< ctl.operation / operation_log     (历史,无外键)
-      │              ├──< ctl.fault_plan / fault_delivery   (历史,无外键)
-      │              └──< ctl.pce_delivery_log              (审计,无外键)
+      │              ├──< ctl.operation ──< operation_log   (随 run 级联)
+      │              ├──< ctl.fault_plan / fault_delivery   (随 run 级联)
+      │              └──< ctl.pce_delivery_log              (随 run 级联)
       ├── ctl.deployment_config
       ├── ctl.topology_snapshot ──< topology_node / topology_link ──< topology_link_alias
       └── ctl.clock_projection
@@ -60,7 +60,7 @@ stats.*  (全部按 run_id LIST 分区;只认 run_id,不认 deployment)
 | R11 | **每个事实只有一个权威来源**:状态不存两份(D1);身份不存两份(D2);run→deployment 不冗余(D4) |
 | R12 | **"意图"与"观测"分开命名**:`ctl.*` 存后端想做的和它的重试状态(`control_state`、`next_attempt_at`…);`stats.*` 存网络上观测到的(`observed`)。两者不得共用同一列名 |
 | R13 | 外键能表达的不变量不留给代码:同表组合约束用复合外键/部分唯一索引(第 3.3 节) |
-| R14 | 历史/审计表不设外键,run 清理时保留;从属数据设外键并级联 |
+| R14 | 与 run 相关的表(包括 operation、fault_delivery、pce_delivery_log)一律设外键并级联,清理 run = 清理它的一切(`stats` 靠 `DROP PARTITION`,`ctl` 靠级联) |
 | R15 | 没有读者的列/表不建(以删除为默认,保留要有理由) |
 
 ## 3. `ctl` schema(控制面,不分区)
@@ -148,24 +148,30 @@ CREATE UNIQUE INDEX ON ctl.service_tunnel (service_id, direction) WHERE is_selec
 CREATE VIEW ctl.service_state_v AS
 SELECT s.*, CASE
          WHEN s.stopped_at IS NOT NULL THEN 'STOPPED'
-         WHEN sc.state IS NOT NULL    THEN sc.state                  -- PCE 观测:唯一权威
+         WHEN sc.state = 'DOWN' AND EXISTS (                          -- 保持期:选中的隧道 DOWN 但还在重试窗口内
+                SELECT 1 FROM ctl.service_tunnel b JOIN ctl.tunnel t ON t.id = b.tunnel_id
+                WHERE b.service_id = s.id AND b.is_selected
+                  AND t.control_state = 'DOWN' AND t.hold_down_until > now())
+              THEN 'DEGRADED'
+         WHEN sc.state IS NOT NULL THEN sc.state                      -- PCE 观测:唯一权威
          WHEN NOT EXISTS (SELECT 1 FROM ctl.service_tunnel b WHERE b.service_id = s.id) THEN 'DRAFT'
          ELSE 'PROVISIONING' END AS state
 FROM ctl.service s
 LEFT JOIN stats.service_current sc ON sc.run_id = s.run_id AND sc.service_id = s.id AND sc.direction = 'forward';
 ```
 
-- **没有 `derived_state_cached`**,也没有两个写者。"PCE 还没投影"的服务只有 `DRAFT`/`PROVISIONING` 两种取值(旧视图里 `hold_down_until` 之类的推导,**依赖 `tunnels.state`**,在新模型里属于"控制面生命周期",不再参与服务的**对外状态**——**这是行为变化**:服务的 `UP/DEGRADED/DOWN` 从此只来自 PCE 观测。需要你确认旧视图里 `hold_down_until > now()` 判 `DEGRADED` 那一支(隧道 DOWN 但仍在保持期)是否要保留:若要,它是**重试窗口**的信息,应加在 `service_state_v` 里,**而不是**写回缓存列。**待你确认**。)
+- **没有 `derived_state_cached`**,也没有两个写者。"PCE 还没投影"的服务只有 `DRAFT`/`PROVISIONING` 两种取值。**行为变化(已确认)**:服务的 `UP/DEGRADED/DOWN` 现在来自 PCE 观测;唯一保留的控制面推导是**保持期**(已确认保留):观测为 `DOWN` 且选中的隧道仍在 `hold_down_until` 之前 → 显示 `DEGRADED`,在视图里按需计算,**不写回任何列**。
+- **与旧视图的差别(未核实,要由契约测试钉住)**:旧视图里"选中隧道 `SIGNALING`/`REROUTING` → `DEGRADED`"和"选中隧道 `ACTIVE` 但有未激活的候选 → `DEGRADED`"这两支,现在改由 PCE 观测的状态给出(`sc.state`)。**PCE 投影是否在这两种情形下给出同样的值,我没有核实**;I2-e 要对照 `service_current` 的生成逻辑(`_refresh_service_current_locked`)逐支确认,不一致的地方要么在视图里补,要么记为有意的行为变化。
 - 过滤"按状态列服务"走 `stats.service_current(run_id, state)` 的索引。**性能未测**(历史上服务列表 4–6 s 就出在这条路径,新视图要在 I2-e 用真实数据量做基准,不达标再物化,但物化必须是**单写者**的)。
 
 ### 3.3 其余控制面表
 
 | 表 | 设计 |
 |---|---|
-| `ctl.operation`、`ctl.operation_log` | `operation(id, kind, status CHECK, run_id, service_id, is_reconcile, updated_at, payload jsonb, failure_type)`,**`run_id`/`service_id` 无外键**(D5:历史)。`operation_log(seq identity, operation_id FK ON DELETE CASCADE, created_at, level CHECK, text)`。**日志无上限**是已知问题(审计 L3):加按 `operation_id` 的行数上限或按时间的保留策略(**待定**) |
+| `ctl.operation`、`ctl.operation_log` | `operation(id, kind, status CHECK, run_id FK ON DELETE CASCADE [可空:不属于任何 run 的操作], service_id, is_reconcile, updated_at, payload jsonb, failure_type)`。`operation_log(seq identity, operation_id FK ON DELETE CASCADE, created_at, level CHECK, text)`。**保留策略(已确认):每个 operation 的日志行数上限**(可配置的 N,默认值待定;写入时若超过 N,删最旧的一批——在同一事务里,避免无界增长)。`service_id` 不设外键(服务可先于/独立于 operation 被清理,operation 里只当引用) |
 | `ctl.topology_snapshot`、`topology_node`、`topology_link`、`topology_link_alias` | 以 `deployment_id` 为作用域(拓扑属于部署,不属于 run),主键/外键同前;`inter_domain` boolean;`position jsonb`。**体量未测**;若成为瓶颈按 `deployment_id` 分区 |
-| `ctl.fault_plan`、`ctl.fault_delivery` | `fault_plan(run_id PK, plan jsonb, archived_at)`;`fault_delivery(id identity, run_id, fault_event_id, action, result jsonb, recorded_at)` + 索引 `(run_id, fault_event_id)`。**`fault_schedule_event_index` 与它的 `legacy_deliveries_json` 删除**:它是为了让 SQLite 的 `json_each` 查"某事件的投递"而存在的二级索引,Postgres 里 `fault_delivery` 的索引直接解决(**未核实**:`runtime_store.py:2842,2868` 两处查询要逐个改写,确认语义一致) |
-| `ctl.pce_delivery_log` | `(seq identity, run_id, pce_run_id, kind CHECK ('prepare','commit','reset','release'), phase, pce_device, request_digest, request jsonb [已脱敏], response jsonb, transport_succeeded boolean, recorded_at)`;无外键(审计记录) |
+| `ctl.fault_plan`、`ctl.fault_delivery` | `fault_plan(run_id PK FK ON DELETE CASCADE, plan jsonb, archived_at)`;`fault_delivery(id identity, run_id FK ON DELETE CASCADE, fault_event_id, action, result jsonb, recorded_at)` + 索引 `(run_id, fault_event_id)`。**`fault_schedule_event_index` 与它的 `legacy_deliveries_json` 删除**:它是为了让 SQLite 的 `json_each` 查"某事件的投递"而存在的二级索引,Postgres 里 `fault_delivery` 的索引直接解决(**未核实**:`runtime_store.py:2842,2868` 两处查询要逐个改写,确认语义一致) |
+| `ctl.pce_delivery_log` | `(seq identity, run_id FK ON DELETE CASCADE, pce_run_id, kind CHECK ('prepare','commit','reset','release'), phase, pce_device, request_digest, request jsonb [已脱敏], response jsonb, transport_succeeded boolean, recorded_at)` |
 | `ctl.clock_projection` | 原 `runtime_clock`:`deployment_id PK FK`、`run_id`、`status`、`active_snapshot_index`、`effective_time`、`payload jsonb`、`source`、`collected_at`、`stale_at`。**它是缓存,不是事实**:丢了可重建(命名里体现) |
 | `cfg.profile` | `id, profile_type CHECK(9 种), name, description, revision CHECK(>=1), config jsonb, config_digest, defaults_revision, org_id uuid, created_at, updated_at` + `UNIQUE (profile_type, name)`(**未核实**现有 `idx_configuration_profiles_type_name` 是否唯一) |
 
@@ -310,10 +316,14 @@ CREATE TABLE stats.run_input (run_id text PRIMARY KEY, inconsistency_version big
 
 重新设计比"移植"**改动面更大,不是更小**:`fact_index` 改变每条摄入路径,`link_sample` 改变 slice 构建读链路的方式(`_compute_batch_metrics`、`_snapshot_link_delays_locked`、`_snapshot_link_states_locked`、`_runtime_snapshot_link_facts`、可用性/故障计算),`service_state_v` 改变控制面存储的所有列表/过滤。好处是**去掉了隐含不变量**(漏登记、双写者、热点触发器、哨兵行),且"方言转换"那部分工作本来就不用做。我现在估 I2 **约 36–52 天**(±50%;原 28–42):多出来的主要是 `link_sample` 与 slice 构建的改写,以及服务状态视图的基准与调整。**迭代节奏仍是"我写、你在本机 Postgres 上跑、把失败贴回来"。**
 
-## 10. 需要你确认的(其余我已按建议定了)
+## 10. 已确认的决定(2026-10-07,用户)
 
-1. **D4**:API 层按 `deployment_id` 做作用域校验的位置,改为经 `ctl.run` 取 `deployment_id`——可以吗?
-2. **D5**:`operation`/`fault_delivery`/`pce_delivery_log` 在 run 被清理后**保留**(历史/审计)——可以吗?还是随 run 删?
-3. **服务对外状态只来自 PCE 观测**(第 3.2 节的行为变化):旧视图里"隧道 DOWN 但仍在保持期 → `DEGRADED`"那一支要不要保留?
-4. **链路快照改成每条链路一行**(4.3):接受吗?(它改变 slice 构建的读法,是这次重新设计里最大的一项。)
-5. **`operation_log` 的保留策略**:按 operation 的行数上限,还是按时间?
+| 问题 | 决定 |
+|---|---|
+| D4 作用域 | 事实/投影/slice 结果去掉 `deployment_id`,API 作用域校验经 `ctl.run` 取 |
+| D5 历史保留 | **随 run 级联删除**(operation / fault_delivery / pce_delivery_log 的 `run_id` 是外键 `ON DELETE CASCADE`) |
+| 保持期状态 | **保留**,在 `ctl.service_state_v` 里按需计算(`sc.state='DOWN'` 且选中隧道仍在 `hold_down_until` 之前 → `DEGRADED`) |
+| 链路快照 | **接受每条链路一行**(`stats.link_sample`) |
+| `operation_log` 保留 | **每个 operation 的行数上限**(可配置 N) |
+
+**仍标"未核实"、实现时要核对的**:`slice_result.status` 的取值集合;旧服务状态视图的 `SIGNALING`/`REROUTING`/"有未激活候选"两支与 PCE 投影给出的状态是否一致;`fault_delivery` 两处查询改写后语义是否一致;`link_sample` 是否允许跨 chunk 重复同一链路(新模型里 = 拒绝);`cfg.profile` 的 `(profile_type, name)` 唯一性;`operation_log` 默认 N。
