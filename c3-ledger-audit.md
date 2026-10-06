@@ -90,3 +90,22 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 - 必须先做**语义设计**再动手,三个具体问题:(a) 域内是增量 `reserve/release`,Parent 是每次 `refresh` 用 `set` 覆盖并靠扫描 LSPDB 重算,统一后接口里是否同时保留"增量"与"整体设值"两种操作,还是把 Parent 也改成增量(会改变双重计费行为);(b) 域内键是 `LspKey(plspId, pccAddress)`、Parent 键是 symbolicName,统一键空间的方式;(c) 两种锁(索引监视器→TED 写锁 / 公平 `ROUTE_ADMISSION_LOCK`)不能在统一后合并或插入新锁层。
 - 估时:原 12–15 天只含域内;含 Parent 需要再加 Parent 语义设计与 Parent 侧 golden trace,**粗估 20–28 天(±50%)**。这个数字依据比域内部分弱,因为我没有读 `ParentMdLspReroute` 的内部。
 - 建议的最小风险排序:先 C3-0(域内 + Parent 的 golden trace 与单元测试),再 C3-1/C3-2 做域内,**Parent 在域内重构通过 golden trace 之后**再接入同一接缝。
+
+## C3-0 完成(2026-10-06,本地提交,未 push)
+
+**基线**:golden trace 录制于 PCE `a817645`(录制提交本身为 `5cf635b`,只加测试与录制文件,不含逻辑改动);topology 的特性测试在 `e06ff9e`。录制时 PCE 工作分支已含 H1/C2 的本地提交(行为中立)。
+
+**做了什么**
+- topology:`MplsOccupancyStoreTest`(14:语义与并发 CAS 争用)、`MplsBandwidthCharacterizationTest`(16:绑定与未绑定边、取整链、上限用 `(long)` 截断、**记录了两个怪行为**:未绑定路径允许 0.0001 Mbps 的超额并出现负值 `-4.9591064E-5`,绑定但无基线的边推导值为 null 且永不设上限)。
+- PCE `es.tid.pce.golden`:`GoldenTrace`(录制/比较工具,缺文件即失败,不会静默通过);`DomainLedgerGoldenTraceTest`(真实 `MplsPathComputation` + 真实 `LspResourceIndex`,8 节点环加弦,300 步/seed,seed 11/22/33;创建、争用创建、拆除、链路故障与重路由、链路恢复(新边对象,同一稳定键)、换帧、pending 重叠、中途 `rebuildFromReports`);`ParentLedgerGoldenTraceTest`(`es.tid.pce.parentPCE` 包,真实 `ParentMplsAdmissionCoordinator` + `ParentMplsBandwidthUpdater`,4 个域、5 条域间链路,创建/提交/拆除/先建后拆与先拆后建的重路由/失败尝试/刷新);`LedgerConcurrencyStressTest`(8 线程,只断言不变量:不超额、store 等于账本、释放后归零)。
+- 每步记录结果与完整状态的 SHA-256(每链路已预留 bps 与推导的 unreserved Mbps、确认/pending/有效账本、每条分配);`-Dsalasim.golden.fullState=true` 输出完整状态便于定位;不含时间戳。
+- 覆盖(三个 seed 的统计):域内 create 86–94 接受、29–50 无路径、13–18 争用拒绝;reroute 15–34 成功、14–15 无路径被移除;pending 重叠第二个被拒;Parent create 56–62 提交、58–73 拒绝,reroute 36–45 提交(其中约一半先拆后建),failed-attempt 9–12 次释放。
+
+**验证**
+- 变异检查:把 `MplsOccupancyStore.reserve` 的 `next > capBps` 改成 `>=`,域内三个 seed 全部在第 7/17/31 行失败;把 `set` 改成多加 1,Parent 三个 seed 全部在第 1 行失败;两处都已还原并重新通过。
+- 同一 JVM 内运行两次得到相同轨迹(`theTraceIsDeterministicWithinOneJvm`)。
+- PCE 全量 1506 个(比之前多 10 个),0 失败,21 个沙箱错误(基线);topology 新增 30 个。
+
+**使用**:重构后任何提交必须逐字节重现这些文件(`mvn test -Dtest='*GoldenTraceTest'`)。有意改变行为时才用 `-Dsalasim.golden.record=true` 重新录制,且要在提交信息里写明原因。
+
+**仍然没有覆盖的**:emulator 的 PCRpt 带宽回声(`NotifyLSP:170`)与 `MPLSResourceManager`/`WSONResourceManager` 单元测试(归 C4);Parent 侧的多线程压力(`ParentMplsAdmissionCoordinatorTest` 已有部分并发用例);`pruneAbsent` 的真实调用路径;图 `clone()` 是否别名 `TE_info`;golden trace 用的是固定的候选路径与简化拓扑,**不覆盖** `MPLS_CrossSnapshot_Algorithm` 的跨快照排序与预计算(这些不是 C3 要改的部分,但如果 C3 误改了它们对账本的调用,这里不会发现);反应式与预计算的带宽严格度仍无专门测试。
