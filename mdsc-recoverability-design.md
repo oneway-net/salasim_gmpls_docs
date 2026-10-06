@@ -165,3 +165,7 @@ controller 仓库有进程内的端到端测试(`FullChainTest`/`ChainWorld`,真
 **测试**:`MdscRestartTest` 新增 2 个:MDSC 不在时域间链路故障 → 恢复前 Parent 什么都没收到 → 恢复后收到两个方向的 down 且带 F-2;MDSC 不在时链路恢复 → Parent 收到两个方向的 up(否则它会一直以为是 down);`ChainWorld.restartMdsc(whileDown)`。突变检查(去掉 `replay()`)被这两个用例抓到。controller 全量 204 个通过。
 **仍然近似的**:重放报告的 `event-sim-time` 是恢复时刻(不是变化实际发生的时刻),域内抽象链路的 fault-id 不填(与平时一致),所以 `evidence-incomplete` 仍置 true,含义改为"状态已补齐,但停机期间发生的事件的时刻与归因只是近似"。只补当前帧:将来的帧到换帧时由 PNC 的抽象拓扑带着故障过去(结转)。
 **没验证**:(1) 节点真的在 emulator 上保留证据直到重新订阅(读了代码、在 FakeNode 上测,没在真实 emulator 上);(2) 大规模下一次重放的链路数与 Parent 处理时间(一批 500 条,没有压测)。
+
+### Backend 摘要(2026-10-07,完成,本地)
+`controller_run_health.evidence_incomplete(status)` + `TopologyClockService._note_controller_recovery`:Backend 的周期检查看到 MDSC 的 `run-status/evidence-incomplete = true` 时,**不让 run 失败**,而是在该 run 的 `summary.controllerRecovery` 写一次 `{evidenceIncomplete, firstSeenAt, controllerPhase, note}`(再看到不重写,run 已结束则放弃)。测试 3 个新增,backend 全量通过。**没做**:前端展示这条摘要(它在 run 的 summary JSON 里,尚无页面读它);PNC 的 `evidence-incomplete` 不被 Backend 读取(Backend 只读 MDSC 的 `run-status`)。
+
