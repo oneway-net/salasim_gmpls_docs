@@ -122,7 +122,6 @@ final class ServiceSpec {
     final String lspKey;             // 稳定业务键（symbolicPathName / tunnelId）
     final EndPoint source, dest;     // 端点
     final int bandwidth;             // 带宽需求
-    final int slotWidth;             // SSON 槽宽
     final int objectiveFunction;     // OF 代码
     final Constraints constraints;   // 包含 / 排除 / 亲和 / SRLG 等
     final int priority;              // 紧急 / 常规 / 优化

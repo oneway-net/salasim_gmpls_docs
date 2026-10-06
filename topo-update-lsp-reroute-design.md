@@ -107,16 +107,15 @@ private void loadFrame(ScheduleFrame frame) {
         FrameView.create(tempTed, ledger);               // 将 Ledger 中 MPLS 带宽覆盖到 IP 层图
         multiLayerTed.setUpperLayerGraph(tempTed.getNetworkGraph());
         multiLayerTed.clearAllReservations();            // 触发 MPLS_MinTH_AlgorithmPreComputation 刷新
-    } else {               // SSON/WSON 模式
+    } else {               // WSON 模式
         SimpleTEDBState newState = SimpleTEDBState.copyOf(tempTed);
-        // 保留 boot-time 光层配置（SSON grid / WSON bitmap）
-        if (newState.ssonInfo() == null) newState = newState.withSsonInfo(existing.getSSONinfo());
+        // 保留 boot-time 光层配置（WSON bitmap）
         if (newState.wsonInfo() == null) newState = newState.withWsonInfo(existing.getWSONinfo());
         simpleTed.replaceState(newState);                // 单次 volatile 写，读者无法看到撕裂状态
-        FrameView.create(simpleTed, ledger);             // 将 Ledger 中 SSON 占用覆盖到 λ 图
+        FrameView.create(simpleTed, ledger);             // 将 Ledger 中 WSON 占用覆盖到 λ 图
     }
 
-    // ④ 应用预计算重路由（仅 SSON）
+    // ④ 应用预计算重路由（仅 WSON）
     if (!multiLayerMode && precomputeEnabled) {
         rerouteApplierWorker.applyFrameNow(frame.index); // 见 §5.3
     }
@@ -215,7 +214,7 @@ PCC 发 PCRpt → LedgerWriter.onPccReport(sr, pccIP, simNow)
   └─ LspLedger.update(lspKey, LedgerEvent{
          hops: [h0..hN],
          linkKeys: { lk0, lk1, ... },
-         switchingType: SSON|WSON|MPLS,
+         switchingType: WSON|MPLS,
          numSlots: M,
          ...
      })
@@ -259,7 +258,7 @@ boolean eroContainsUndirectedIpv4Link(ERO ero, Inet4Address a, Inet4Address b) {
 
 ### 5.1 域内预计算（PrecomputeWorker）
 
-**目标**：在帧 N 时提前为帧 N+1 可能消失的链路计算 SSON/WSON 替代路由，帧切换时零时延应用（无需实时 BRPC）。
+**目标**：在帧 N 时提前为帧 N+1 可能消失的链路计算 WSON 替代路由，帧切换时零时延应用（无需实时 BRPC）。
 
 #### 5.1.1 工作流
 
@@ -292,7 +291,7 @@ runPrecomputePass():
                                     parentRequests)
      // Parent PCE 收到后放入 pendingTransitIslReroutes（见 §6）
 
-  ⑤ 并发计算替代路由（computePool，SSON/WSON 模式）
+  ⑤ 并发计算替代路由（computePool，WSON 模式）
      for stateReport in delegatedLsps:
          if lspKey in affectedKeys:
              computePool.submit(PrecomputeTask(stateReport, futureTed, lookahead))
@@ -313,13 +312,13 @@ runPrecomputePass():
             lsp = rptdb.findByLspId(lspKey.pLSPID)       // 查找当前 LSP
             if lsp == null || !lsp.isDelegated(): skip   // 非委托 LSP 跳过
             newEro = cache.getEro(lspKey, frameIndex)    // 取预计算 ERO
-            // RSA：在当前帧的实际频谱上找可用槽
-            assignedEro = assignSpectrumOnRoute(ssonManager, newEro, slotWidth)
+            // RWA：在当前帧的实际波长占用上找可用波长
+            assignedEro = assignWavelengthOnRoute(wsonManager, newEro)
             if assignedEro != null:
                 sendDelegatedPcUpdate(lsp, assignedEro, "snapshot-invalidated")
                 metrics.cacheHitsAtApply++
             else:
-                // 频谱分配失败（预计算路由频谱已被占用）→ 实时 AURE_SSON
+                // 波长分配失败（预计算路由波长已被占用）→ 实时 AURE_WSON
                 fallbackCompute(lsp, simpleTed)
                 metrics.cacheMissAtApply++
 
@@ -413,7 +412,7 @@ DomainPCESession.handleRequest():
             futureTed = run.getInventoryEntry(frame.index)
                             .parsedTopology.domainTed          // 取物化 TED
             requestDispatcher.dispatchRequests(p_req, out, futureTed)
-            // 用未来 TED 运行域内路径计算（SSON/MPLS/WSON）
+            // 用未来 TED 运行域内路径计算（MPLS/WSON）
             // 计算出的段 ERO 只包含在 N+1 帧仍然存在的链路
             return true   // 拦截，不走正常路径
 ```
@@ -508,7 +507,6 @@ DomainPCEServer.rerouteLSP(lsp):
 
   ① 只处理已委托的 LSP（RFC 8231 §5.7）
   ② 按 Ledger 中的 SwitchingType 选算法:
-     SSON → AURE_SSON_algorithm
      WSON → AURE_Algorithm
      MPLS → MPLS_MinTH_Algorithm
   ③ 计算新路径（在当前帧 TED 上，不带 FutureFrameTLV）

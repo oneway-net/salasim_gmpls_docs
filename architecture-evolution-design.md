@@ -38,7 +38,7 @@
 | 主题 | 决策 |
 |---|---|
 | Java | 升到 Java 25 LTS，分三步（A/B/C）推进 |
-| 平台范围 | **运行时只支持 MPLS；WSON、WLAN(VLAN)、IT 资源三者代码休眠保留（运行时由 MplsOnlyMode 关闭）；删除全部 SSON 内容，以及多层交换（multiLayer 算法）代码**（2026-10-02 决定，先于 W1-A 执行）。保留的 `multiLayer.Operacion2`/`OperationsCounter` 是 MPLS 算路核心，`MultiLayerTEDB` 是 MPLS 的 TED，均不属于被删内容。PCE 的 W2-S5 里 SSON 的 lambda 图重建长写锁问题随之消失 |
+| 平台范围 | **运行时只支持 MPLS；WSON、WLAN(VLAN)、IT 资源三者代码休眠保留（运行时由 MplsOnlyMode 关闭）；删除多层交换（multiLayer 算法）代码**（2026-10-02 决定，先于 W1-A 执行）。保留的 `multiLayer.Operacion2`/`OperationsCounter` 是 MPLS 算路核心，`MultiLayerTEDB` 是 MPLS 的 TED，均不属于被删内容。PCE 的 W2-S5 里光层 lambda 图重建长写锁问题随之消失 |
 | 时钟 | 所有任务不得影响时钟推进；删除遥测背压导致的暂停 |
 | OSPF | 用 FRR 的 ospfd 跑 OSPF-TE（RFC 3630/4203/5392/7471）。**不用 BFD**。故障由控制面直接下发给 emulator，节点把接口置为 down 后靠 OSPF 泛洪。**开启 OSPF 的 run 强制 speedup=1**。**帧切换不走 OSPF**，直接用快照更新，OSPF 只报告与当前快照不一致的变化 |
 | 架构 | 北向 RESTCONF；Backend 改造为控制器；管理面 NETCONF；控制面保持 PCEP/RSVP-TE/OSPF-TE |
@@ -146,7 +146,7 @@ Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──P
 - **跨域链路**：每个域一个 OSPF 区域，不跨域泛洪。边界节点所在的两个 Domain PCE 各自收到，再通过现有的 ChildImpact PCNtf 报给 Parent。Parent 不再直接接收故障。
 - **LSA 节流**：FRR 的 `timers throttle lsa` 和 `timers lsa min-arrival` 放进 profile 配置，并在结果中记录。
 - **带宽**：OSPF-TE 报上来的未预留带宽只用来和账本对账，不覆盖账本，LSP-DB 仍是带宽的权威来源。RFC 7471 的时延可以作为 MIN_DELAY 目标的输入。
-- **WSON**（将来）：节点代理通过 FRR OSPF API 自己发 opaque LSA（RFC 7688 波长可用性），编码复用 `AvailableLabels`、`BitmapLabelSet`。SSON 已移出范围，见第 2 节。
+- **WSON**（将来）：节点代理通过 FRR OSPF API 自己发 opaque LSA（RFC 7688 波长可用性），编码复用 `AvailableLabels`、`BitmapLabelSet`。
 - **speedup 校验**：`simulation.v1.yaml` 规定开启 OSPF 时 speedup 必须为 1.0，run 启动 preflight 不满足就返回 409。
 - **删除（已完成，2026-10 Phase 1）**：Backend 发给 PCE 的故障 HTTP 链路，即 `arm_random_link_fault_timers` 到 `_deliver_random_link_fault` 再到 `/api/v1/sim/faults/*`。故障改由控制器经 NETCONF 下发。
 - **删除旧 OSPF 代码**：emulator `transport/ospf/*`、PCE 和 topology 两份 `tedb/ospfv2/*`、`TopologyUpdaterThread` 的 OSPF 分支、`netManager`/`vntm` 的发送器。`satenets/master` 分支不合并。

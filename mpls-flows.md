@@ -53,7 +53,6 @@ GW Emulators            Sat-1 Emulators
 
 | switchingType | objectiveFunctionCode | 算法 |
 |---|---|---|
-| SSON | 1002 | AURE_SSON_algorithm |
 | WSON | 1001 | AURE_WSON_algorithm |
 | MPLS | 1003 | MPLS_MinTH_Algorithm |
 
@@ -668,9 +667,9 @@ applyPendingTransitIslMbb 在 frame 切换时 drain
 | **MPLS OF code 在 emulator 侧无效** | domain PCE PCInitiate 带 ERO 时，emulator 直接用 ERO 建 RSVP-TE，OF code 仅影响本地 LSPTE 记录，不影响路径 |
 | **PCEP 会话跨 sim 持续** | domain PCE ↔ emulator 的 PCEP 会话不随 sim stop/start 重置，frozen thread 跨 run 存活（Bug10 修后自愈） |
 
-### MPLS vs SSON/WSON 差异
+### MPLS vs WSON 差异
 
-| 维度 | MPLS | SSON/WSON |
+| 维度 | MPLS | WSON |
 |---|---|---|
 | ERO label 子对象 | 无 (纯 IP 跳) | GeneralizedLabel (N,M) |
 | endpoint 类型 | GeneralizedEndPoints (GEP_P2P) | EndPointsIPv4 |

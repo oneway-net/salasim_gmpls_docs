@@ -140,8 +140,8 @@ Emulator 模板：    RSVPMode true、isMultiDomain true、SetTraces true
 
 算法规则由编译器按 switching 能力渲染（`render_domain_pce_template` /
 `render_parent_pce_template`）：
-域 = `of="1003" mpls.MPLS_CrossSnapshot_Algorithm`（SSON 时 `of="1002" sson.AURE_SSON_algorithm`）；
-父 = `MDHPCEMinNumberDomainsKSPAlgorithm`，MPLS 下 `of=1003`、SSON 下 `of=1002`。
+域 = `of="1003" mpls.MPLS_CrossSnapshot_Algorithm`；
+父 = `MDHPCEMinNumberDomainsKSPAlgorithm`，MPLS 下 `of=1003`。
 
 ### L6 后端进程环境变量（`SALASIM_*` 等 53 个）
 
@@ -214,7 +214,7 @@ Profile ↔ Java 字面量这条最容易出问题的边。**问题全部出在�
 
 | 项 | 镜像副本 | 编译器副本 |
 | --- | --- | --- |
-| 父 PCE 算法 OF | 写死 `of="1002"` | MPLS 下渲染 `of=1003`，SSON 下 `1002` |
+| 父 PCE 算法 OF | 写死 `of="1002"` | MPLS 下渲染 `of=1003` |
 | emulator `flexi` | 写死 `false` | `__EMULATOR_FLEXI_ENABLED__`（按 defaultType） |
 | emulator `mpls` | 写死 `true` | `__EMULATOR_MPLS_ENABLED__`（按 defaultType） |
 | emulator `networkDescriptionFile` | 有 | **已删除** |
@@ -284,7 +284,7 @@ Profile YAML 里**（`grep switching configuration_defaults/` 零命中）。
 它只存在于 scenario runtime 输入，默认 MPLS。
 
 注意这与**每业务的** `switchingType` 是两回事——后者在
-`workload.v1.yaml:26/76`（`serviceClasses[].switchingType`，enum `[MPLS, SSON]`），归属清晰。
+`workload.v1.yaml:26/76`（`serviceClasses[].switchingType`，enum `[MPLS]`），归属清晰。
 
 > 2026-09-17 修订：这个"两回事"的判断是错的。交换平面由部署的 PCE 决定，
 > 每业务副本只能重述或矛盾，因此 `serviceClasses[].switchingType` 已从
@@ -317,9 +317,9 @@ L7 那 7 个超时 + 8 个开关，既不在 Profile 里，也不由 k8s 注入�
 > 副本连同 schema 字段一起删除（见 M4 的修订说明）。
 
 另：`PathCalculationBenchmarkPanel.jsx:138` 内联了
-`<option>MPLS/WSON/SSON`，绕过 `src/lib/switching-types.js` 的
+`<option>MPLS/WSON`，绕过 `src/lib/switching-types.js` 的
 `SWITCHING_TYPE_OPTIONS`（其中只有 MPLS，且 `SWITCHING_TYPE_IS_FIXED` 明确说明
-"只有一种类型时不渲染选择器"）。这个面板会让用户选到部署根本不支持的 WSON/SSON。
+"只有一种类型时不渲染选择器"）。这个面板会让用户选到部署根本不支持的 WSON。
 
 ### M7 ★ `salasim.topology.schedule.file` 是幽灵属性
 
@@ -390,7 +390,7 @@ L7 那 7 个超时 + 8 个开关，既不在 Profile 里，也不由 k8s 注入�
 | P0 | M3 | 统计静默偏 5 倍，无任何报错 | 已修复 |
 | P1 | M1 | 删掉镜像内置模板副本（或加 parity 测试） | 已删除 |
 | P1 | M4 | switching 能力收敛键名，并决定是否进 Profile | 已进 Profile |
-| P2 | M6 | `"MPLS"` 兜底收敛；修 Benchmark 面板的 WSON/SSON 选项 | 已修复 |
+| P2 | M6 | `"MPLS"` 兜底收敛；修 Benchmark 面板的 WSON 选项 | 已修复 |
 | P2 | M8 | topology 模块纳入 drift 测试扫描范围 | 已纳入 |
 | P3 | M5 | 前端超时通过 k8s env 注入 | 已修复（见下方修正） |
 | P3 | M7 / M9 | 删除幽灵注释与死常量 | 已删除 |
@@ -400,7 +400,7 @@ L7 那 7 个超时 + 8 个开关，既不在 Profile 里，也不由 k8s 注入�
 
 1. **M4 的落点不是 `composed.v1.yaml`。** 该文件只承载跨叶子的*约束*，不承载字段；
    字段必须落在叶子 YAML。最终放在 `domain-pce.v1.yaml` 的 `switching.type`
-   （enum `[MPLS, SSON]`，`tier: decision`，`defaultsRevision` 8→9）：注册算法的是域 PCE，
+   （enum `[MPLS]`，`tier: decision`，`defaultsRevision` 8→9）：注册算法的是域 PCE，
    父 PCE 的 `algorithmRule` 与 emulator 的 flexi/mpls 开关都由这一个值派生，不再各自成字段。
    也没有为它新开一个部署叶子类型——`DEPLOYMENT_PROFILE_LEAF_TYPES` 会把每个叶子变成
    必选的 Profile，单字段叶子会给所有用户凭空加一步。

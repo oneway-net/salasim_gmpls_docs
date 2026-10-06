@@ -17,7 +17,7 @@
 
 净计费只对 **MPLS 有效**：
 - `reserveOnTed` / `releaseOnTed` 对非 MPLS / 零带宽的分配是 no-op（`reserveOnTed` 返回 false）。
-- SSON / WSON 只经 `rebuildFromReports` 批量进入 `confirmed`，**从不进入 `pending`**，故 pending-wins 的 `activeAllocations` 对光层安全（光层的波长/频谱本地真实占用由仿真器侧管理，不在此账本 net）。
+- WSON 只经 `rebuildFromReports` 批量进入 `confirmed`，**从不进入 `pending`**，故 pending-wins 的 `activeAllocations` 对光层安全（光层的波长本地真实占用由仿真器侧管理，不在此账本 net）。
 
 ---
 
