@@ -249,3 +249,32 @@ OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁
 
 **工作量**:取消适配层与逐条类型排查后,I2 的"方言转换"部分(原估约 3–4 天 + 类型排查)基本消失,但**重写约 2 万行存储代码的 SQL 仍是主体**,所以总量只小幅下降:我现在估 I2 **约 28–42 天**(±50%,原 34–49)。主要不确定性在于 Postgres 只能在你的终端跑,迭代是"我写、你跑、贴回失败"的节奏,不是沙箱里的快速循环。
 
+## 15. 契约测试的覆盖(2026-10-07,I2-a 完成)
+
+位置:`salasim_gmpls_backend/tests/test_store_contract_ingest.py`(13)、`test_store_contract_slices.py`(21),共 **34 个**,只经 `StatisticsStore` 边界;后端和控制面播种由 `tests/statistics_backends.py` 的 `World` 提供(`SALASIM_TEST_STATS_BACKEND`,默认 sqlite;Postgres 的 World 用它自己的方式写同样的行)。突变检查:把"已结束的 run 拒绝新事实"的规则放宽,`test_a_finished_run_refuses_new_facts_but_still_recognises_replays` 立即失败。backend 全量 2301 个通过。
+
+**已钉住的行为**
+
+| 主题 | 钉住了什么 |
+|---|---|
+| 幂等与不可变 | 重放 = duplicate(applied 0 / duplicates 1);`messageId` 复用于其他内容 = `ValueError`(含 METRIC 的 payload 哈希);完全相同的重放仍是 duplicate;终态汇总事实同理 |
+| 批次 | **不是全有或全无**:被拒事实之前已接受的前缀提交,被拒的及其后的不应用;序号倒退的信封整体拒绝、什么都不应用;一个批次可混合 TUNNEL/PROTECTION/METRIC |
+| 历史 | `tunnel_history` 序号倒序、分页、总数、别的隧道/run 为空 |
+| 未知 run 的读 | 全部为空/零值而不是错误(11 个读方法) |
+| link 快照 | chunk 幂等重放 = `duplicate`;同一边界各 chunk 之间元数据漂移被拒;**全部 chunk 到齐才封账**,缺一个时 `blockers=["INCOMPLETE_LINK_BATCH"]` 并给出已收/应收;chunk 乱序到达也能封账 |
+| 序号游标与水位 | 账本丢一条 → `PARTIAL`,游标给出 `lastContiguous`/`highestSeen`/`missingRanges=[[2,2]]`/`watermark`;缺的事实迟到 → 变 `COMPLETE`、缺口清空;水位高于实际到达 = 丢失 |
+| 测量与墓碑 | 丢测量事实 → 游标 `[[1,1]]`;**墓碑**补上被采样掉的序号后 slice 可封账;墓碑重复投递只记一次 |
+| 多 PCE | 沉默的 PCE 阻塞 slice,直到它自己封了**更晚**的边界才放行,且 `linkEvidence.complete=false`/`abandonedPces`/`silentPces` 如实标注;被它挡住的后一个 slice 在完整证据上正常封账 |
+| 封账之后 | 终态汇总事实是证据但**不重开已封账的 slice**(`get_slice` 不变),`summarize_terminal_evidence` 计数;已结束的 run 拒绝新事实(`immutable`)但仍识别重放;被拒事实只是回执,不推进序号 |
+| 读视图 | `frozen_service_states`、`list_slice_index`(含 PCE 列表)、`list_slices_with_content_keys`(读不改变 key;slice 得到缺失事实后 **content key 变化**)、`slice_summaries`、`list_reason_rows`、`tunnel_delay_samples`(过滤)、`live_service_availability` 都与同一个封账结果一致 |
+| 故障 | FAULT_IMPACT 事实幂等、"待终态更新"时 `reroutePending`/`affectedLsps[0].status=PENDING`;持续故障只计入触发它的那个 slice |
+
+**没有覆盖(仍只在实现耦合的旧测试里),设计 schema 时要记着**
+
+1. **投影内部**:`protection_updates.apply_status`(PENDING→APPLIED)、`tunnel_current`、`service_current` 的内容——它们被控制面 SQL JOIN,但**不在边界里**,只有通过 `frozen_service_states` 和切片结果间接可见。控制面存储迁移(方案 A)时需要另外的契约(服务列表带实时状态的行为)。
+2. **清理(GC / purge run)**:`runtime_store` 的 `DELETE FROM pce.<table>`(`runtime_store.py:3077/3236/3247`)属于控制面操作,不在 `StatisticsStore` 里。Postgres 的"`DROP PARTITION` 清一个 run"设计要有对应的契约(清完之后读什么,删到一半崩溃怎么办)。
+3. **物理链路可用性、故障时间基准、sun outage**(`test_fault_statistics` 的 14 个、`test_v3_statistics` 里的大块):计算在 Python 里,输入来自 SQL;应当按"输入行 → 输出 JSON"迁成契约,但需要更多播种(`fault_delivery_records`、schedule 的时间基准),本批没做。
+4. **link 证据校验**:`payloadDigest` 不符 → `INVALID`/`PAYLOAD_DIGEST_MISMATCH`;`signalingBacklog` 各计数;`routingStages`、`domainResults` 的内容;`crossSnapshotWindow`。这些是切片结果的**内容**,我只钉了骨架字段(状态、states、protection、bandwidth、利用率)。
+5. **并发**:同一 (run, pce, stream) 的并发摄入与游标更新——SQLite 的全局串行让它无从测试,Postgres 阶段要**新写**并发契约(这是 4.2 节指出的新风险点)。
+6. **`measurement_sampled_out_count`**:墓碑的"采样计数"只被消费者测试调用,**不在边界里**;契约只验证了它的效果(序号被计入)。
+
