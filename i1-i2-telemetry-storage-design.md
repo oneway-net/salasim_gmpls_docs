@@ -1,0 +1,154 @@
+# I1 + I2 联合设计:遥测传输(JetStream)与统计存储(Postgres)
+
+状态:**设计草案,待用户回答第 8 节的问题后才开工**(2026-10-07)。依据:本仓库代码与文档的只读调研(PCE `telemetry/` 包、backend `telemetry_consumer.py`/`v3_statistics.py`/`runtime_store.py`、`telemetry-jetstream-contract.md`、`commercial-architecture.md`),加上在本机沙箱的两项实测(第 6 节)。凡是**没有核实**的地方都标了"未核实"。
+
+## 0. 结论
+
+1. **I1 不是从零开始,JetStream 的传输层(slice 1)两端都已经写好**,默认关闭。I1 剩下的是:核实 D5 的"flag day"到底落了多少、把旧 HTTP/`TelemetryOutbox` 路径删掉、在有 socket 的环境里把真实 NATS 跑通。**它需要集群或用户终端,沙箱里做不了。**
+2. **I2 的体量在 backend 的存储层**:`v3_statistics.py` 一个文件 11188 行,全是 SQLite 语义(单写者、`BEGIN IMMEDIATE`、`INSERT OR IGNORE/REPLACE`、`rowid`、`ATTACH`)。这才是 I2 的主要工作量。
+3. **"不要把统计投影写两遍"的做法**:I1 的消费者已经存在,I2 只换它下面的 **存储**,不再另写一个消费者。先把存储收口到一个接口(并在 SQLite 上用"特征化测试"钉住行为),再写 Postgres 实现,用同一套测试对两边跑。这与我们对 C3、Parent 做过的"先钉行为再换实现"一致。
+4. **Timescale 不是前提**:调研里没有任何地方证明需要超表。建议**先用普通 Postgres(按 run 分区)**,Timescale 只在测量事实上做压缩/保留,且要先回答 O4(托管 Postgres 是否支持 Timescale)。理由见 4.4。
+5. **沙箱既不能起 Postgres,也不能起 NATS**(第 6 节),所以所有 Postgres/真实 NATS 的测试要在你的终端或 CI 里跑,在沙箱里只能跑 SQLite 侧的特征化测试和接口层。
+
+## 1. 现状(事实)
+
+### 1.1 PCE → Backend
+
+| 路径 | 现状 |
+|---|---|
+| HTTP(默认) | `PceWebhookSender` 三条优先队列(有序、link、measurement),指数退避 1 s→30 s,批 64、等待 20 ms;`TelemetryOutbox` 是 SQLite(WAL、`synchronous=FULL`、目录 fsync)的持久 outbox,每条事实一次 SELECT+UPSERT |
+| JetStream(已实现,默认关) | `PCE/telemetry/` 15 个类(`TelemetryPublisher`、`SpillStore`、`StreamSpec`、`FactClass`…),jnats 异步发布、等 PubAck、`Nats-Msg-Id` 去重;ledger/snapshot 先写 `SpillStore`(SQLite、`synchronous=NORMAL`、组提交)再发布且永不丢;measurement 超限 1/10 采样并发**墓碑**以保持序号连续 |
+| 选择 | **按 run**:sim/start 带 `statisticsNatsUrl`(YANG `statistics-transport/nats-url`)就走 JetStream 且**不回退到 HTTP**;否则 HTTP |
+| 时钟 | PCE 里**没有**因遥测积压而暂停时钟的代码(注释写明 I3);超过 `retention.maximumBytes` 只把 run 标成 telemetry-degraded |
+
+流:`SALASIM_TELEMETRY`,主题 `run.<run>.pce.<pce>.{ledger,measurement,snapshot}`,file 存储,单副本,`discard=new`,20 GiB,72 h,单消息 8 MiB,去重窗口 10 min。
+
+### 1.2 Backend
+
+- **HTTP 摄入**:`/internal/pce/ordered-updates`、`/internal/pce/link-resource-updates` → `_ingest` → `V3StatisticsStore.ingest_*`:**一个事务内**完成 `BEGIN IMMEDIATE`、`INSERT OR IGNORE`+payload 哈希去重、**同步刷新当前投影**(`_flush_current_projections_locked`)、记录序号游标(`_record_sequences_locked`)。HTTP 响应即 ACK。
+- **JetStream 消费者(已实现,默认关)**:每个 run×PCE 一个 durable pull consumer,`BatchIngestor` 在 **SQLite 提交之后才 ack**,毒消息二分隔离后记拒绝日志并 `term`,瞬时错误 `nak` 退避 1→30 s。它调用**同一批** `ingest_ordered_payload`/`ingest_link_payload`,所以与 HTTP 共用一个存储。
+- **序号游标**(`pce_stream_state`:`last_contiguous_sequence`、`highest_seen_sequence`、`missing_ranges_json`)决定 slice 能否封账(`STREAM_BELOW_LEDGER_WATERMARK`、`INCOMPLETE_LINK_BATCH`、measurement 覆盖率)。**这是语义核心,不是 JetStream 的 ack floor。**
+- **终态排空**:契约要求 `PCE-drained` 与 `consumer-drained`(`num_pending==0 && num_ack_pending==0 && ack_floor >= lastPubAckStreamSeq`)都成立才算 settled;`telemetry_consumer.evaluate_consumer_drain` 已存在,**是否已接进 `_terminal_pce_drain_status`:未核实**。
+
+### 1.3 SQLite 文件
+
+| 文件 | 内容 | 与遥测的关系 |
+|---|---|---|
+| `pce_state.sqlite3` | 事实表(`pce_tunnel_updates`、`pce_protection_updates`、`pce_metric_facts`、`pce_fault_impacts`、`pce_tunnel_reuse_events`、`pce_cross_snapshot_window`、`pce_terminal_facts`、`pce_idle_connection_reservations`);链路快照(`pce_link_snapshot_batches/chunks`、`pce_evidence_batches`);游标与拒绝(`pce_stream_state`、`pce_sequence_receipts`、`pce_sequence_tombstones`、`pce_rejected_facts`);投影(`tunnel_current`、`protection_current`、`service_current`、`simulation_slice_results`、`slice_input_revisions`、`tunnel_snapshot_delay_samples`) | **I2 的核心** |
+| `runtime.db` | 控制面:`simulation_runs(_v3)`、`deployments`、`services`、`tunnels`、`operations`、拓扑快照、故障计划与投递记录、`configuration_profiles`、`runtime_clock`…;以只读方式 `ATTACH` 为 `rt` 给 v3 写者,也把 `pce_state` 以读写 `ATTACH` 为 `pce` | 与 `pce_state` 有跨库读;**是否纳入 I2:待定(Q1)** |
+| `telemetry.sqlite3`(冷库) | 只看到 `alarm_acknowledgements`、`agent_inventory`、`cluster_status_samples`(未读完整) | 名字叫 telemetry 但**不是**事实表 |
+| PCE 侧 `outbox.sqlite3`、`SpillStore` | PCE 本地,与 backend 存储无关 | 保留(SpillStore)/删除(outbox) |
+
+SQLite 特有写法:`ATTACH`、`PRAGMA`、`BEGIN IMMEDIATE`、`INSERT OR IGNORE`(很多处)、`INSERT OR REPLACE`/`REPLACE INTO`(`v3_statistics.py` 12、`runtime_store.py` 7、`pce_state_schema.py` 2)、`ORDER BY t.rowid`(`v3_statistics.py:3130`)、`db_settings.py` 的"database is locked"重试。`ON CONFLICT` 的数量**未核实**。
+
+## 2. 范围与原则
+
+- **不写兼容层、不迁移历史数据**(开发期规则,`target-architecture-decisions` D14):旧 SQLite 文件不导入,切换后删代码。
+- **存储边界先行**:backend 的 HTTP 路由、消费者、前端读取的 API **都不变**,变的只是 `V3StatisticsStore` 下面的实现。
+- **语义不变是验收**:slice 统计"与旧实现逐项一致"(`architecture-evolution-design.md` W4 的验收口径)。
+- **时钟不暂停**(I1/I2/I3 不变量):存储慢只能让消费者滞后,不能反压到 PCE 和仿真时钟。
+
+## 3. I1:剩余工作
+
+| # | 内容 | 在沙箱里能做吗 |
+|---|---|---|
+| I1-a | **核实 D5 落了多少**:契约说"PCE 发布组件先不接线,切换与 backend 消费者在 `framework-enhancement` 上一起落地,删旧路径";调研看到 `PceWebhookSender.submitToJetStream` 已接线、HTTP 路径与 `TelemetryOutbox` 仍在。逐项列出"已删/未删" | 能(读代码) |
+| I1-b | 终态排空:确认 `evaluate_consumer_drain` 已接进 `_terminal_pce_drain_status`,没有就接上,并补"consumer 未追平不得 settled"的测试 | 能(假端口) |
+| I1-c | 删除旧 HTTP 路径与 `TelemetryOutbox`、三条队列和重试;`statisticsBackendUrl` 字段(契约说无兼容) | 能,但要在 I1-d 之后才安全 |
+| I1-d | **真实 NATS 端到端**:`JetStreamLiveTest`(PCE)与 `test_telemetry_consumer.py` 里的 live 测试;NATS StatefulSet(`nats.yaml`)部署;`max_payload ≥ 8 MiB` | **不能**(第 6 节:沙箱起不了 nats-server) |
+| I1-e | 打开默认:profile/compiler 默认让 run 带 `statisticsNatsUrl`;NATS 未部署时 run 启动前置检查给出明确错误 | 能(单测),验证要集群 |
+| I1-f | NATS 的认证与集群:商业架构要 3 节点集群 + 每 run 只能发布 `run.<runId>.>` 的短期凭据;现在的部署文档写明**无认证、单副本** | **不属于本阶段**(Q5) |
+
+估算(±50%):**4–6 天**,其中 I1-d 取决于你能给的环境。
+
+## 4. I2:Postgres 设计
+
+### 4.1 接口与驱动
+
+- 抽出 `StatisticsStore`(协议):`ingest_ordered_updates`、`ingest_link_chunk`、游标读写、投影读取、slice 封账/终结、清理(purge run)、拒绝日志。现有 `V3StatisticsStore` 是它的 SQLite 实现。
+- **驱动用 psycopg 3 + 连接池(同步)**,不用 asyncpg:backend 现在是 `asyncio.to_thread` 调同步存储,保持这个形状,改动面最小。(当前 backend 虚拟环境里**没有** psycopg/asyncpg,需要加依赖。)
+
+### 4.2 SQLite 语义到 Postgres 的映射(每一项都要有测试)
+
+| SQLite | Postgres | 注意 |
+|---|---|---|
+| 单写连接 + `RLock` + `BEGIN IMMEDIATE`(全库串行) | 事务 + **按 (run, pce, stream) 的行锁/`pg_advisory_xact_lock`**,不同 PCE 的摄入可并发 | 游标更新必须在同一事务里对 `pce_stream_state` 的那一行 `SELECT … FOR UPDATE`;这是并发带来的**新**风险点 |
+| `INSERT OR IGNORE` | `INSERT … ON CONFLICT DO NOTHING` | 唯一键必须与 SQLite 一致(`message_id`、`(run, pce, stream, sequence)`…) |
+| `INSERT OR REPLACE` / `REPLACE INTO` | `ON CONFLICT … DO UPDATE` | **不等价**:REPLACE 是删后插,会改 `rowid`、会触发外键/触发器;**21 处逐个审**,不能机械替换 |
+| `ORDER BY rowid`(:3130) | 显式 `bigint generated always as identity` 列 | 隐式顺序必须变成显式列 |
+| `ATTACH rt` / `ATTACH pce` | 同一数据库的两个 **schema**(`rt`、`pce`),可跨 schema 查询和同事务写 | **删除**"两个库同时脏则回滚"的特殊逻辑(`runtime_store.py:346`);`pce.synchronous=FULL` 对应 `synchronous_commit=on` |
+| `PRAGMA …`、`db_settings` 的 locked 重试 | 连接池 + 对 `40001/40P01`(序列化失败/死锁)的有限重试 | 删除 `database is locked` 重试 |
+| payload 哈希幂等 | **保留**:`payload text`(哈希要对规范化文本)+ 另存 `jsonb` 供查询 | 不能只存 jsonb:键序与数字格式会改变哈希 |
+| 文本 ISO 时间 | `timestamptz` | 比较、排序的边界值要测 |
+| `missing_ranges_json` | `jsonb`(或 `int8range[]`) | 先保持 jsonb,行为不变 |
+
+### 4.3 模式划分与保留
+
+- schema `pce`(事实、游标、投影)、`rt`(控制面,是否迁见 Q1)、`audit`(只追加,商业架构里的审计)。
+- **按 run 分区**(`PARTITION BY LIST (run_id)` 或哈希):run 是自然的生命周期单位(封账后 `purge run` = `DROP PARTITION`,比逐行 DELETE 快得多,也避免大表膨胀)。要先量:每 run 的事实行数(**未测**,没有这个数就选不了分区粒度,Q4 的前置)。
+- 投影表(`*_current`、`simulation_slice_results`…)是**可重建的派生**,放同一事务内维护(见 4.5)。
+
+### 4.4 Timescale:建议先不用
+
+- 超表要求时间列在**每个**唯一约束里,而我们的幂等键是 `message_id`/`(run,pce,stream,sequence)`,不含时间:要么把时间加进键(破坏幂等语义),要么放弃超表。
+- 连续聚合是**延迟物化**,而 slice 封账依赖序号游标和一致的投影("切片统计与旧实现逐项一致"),不能拿一个滞后的聚合来封账。
+- 真正用得上的是**压缩与保留策略**(measurement 事实量大、只读)。这可以先用普通分区 + 按 run 的 `DROP PARTITION`,以后若实测需要再对测量表单独上 Timescale。
+- 云厂商托管 Postgres 是否带 Timescale 是 **O4**,尚未回答;设计不依赖它。
+
+### 4.5 投影:先同事务,再决定要不要拆
+
+W4 原设计写"每种投影一个独立的 durable consumer",但:
+- 拆开后投影变成最终一致,而 slice 封账读的是游标 + 投影,要在两者之间加屏障,**这是新的正确性风险**。
+- Postgres 下"同事务刷新投影"没有 SQLite 的全库串行代价(并发写、行锁),很可能已经够用。
+- 建议:**阶段 A** 摄入 + 投影同事务(与现状等价,先达成"正确");**阶段 B** 只在实测摄入滞后超标时才把**重**的部分(slice 终结,现在已经 `schedule_*_post_commit` 异步化)拆出去。不预先拆。
+
+### 4.6 租户隔离(见 Q3)
+
+`commercial-architecture.md` 写的是"Postgres 行级安全,按组织 id"。要落地需要:
+- 事实表本身**不带 org_id**(run → job → org 才有);选一:(a)事实表冗余 `org_id` 列并建 RLS 策略(查询最简单,写入要多带一个值);(b)只在 `simulation_runs` 上有 org,事实表的策略用 `EXISTS (select 1 from runs …)`(无冗余,但每次扫事实都要连接,性能风险)。
+- 后端服务账号绕过 RLS(摄入路径),租户侧只通过只读角色 + 策略访问。
+- 这一项的设计依赖商业版的用户/组织模型(尚未实现),**本阶段先只预留 `org_id` 列和角色划分,不启用策略**,除非你要求现在做。
+
+## 5. 分阶段与估算(±50%)
+
+| 阶段 | 内容 | 估算 | 环境 |
+|---|---|---|---|
+| I1-a/b/e | 核实、接排空、默认开启与前置检查 | 2–3 d | 沙箱 |
+| **I2-a** | 抽 `StatisticsStore` 接口;在 **SQLite 上写特征化测试**(固定输入序列 → 逐表逐行 + 投影结果的快照,含序号缺口/乱序/重复/墓碑/毒消息/封账);删除对 `rowid` 的隐式依赖 | 5–7 d | **沙箱** |
+| I2-b | Postgres 模式与迁移脚本(纯 SQL 文件 + 一个很小的执行器);`INSERT OR REPLACE` 21 处逐个审 | 3–4 d | 沙箱写、终端验 |
+| I2-c | Postgres 实现的摄入 + 游标 + 拒绝日志,**同一套特征化测试对两边跑** | 6–8 d | **用户终端/CI** |
+| I2-d | 投影、slice 封账与终结、purge run(DROP PARTITION) | 4–6 d | 用户终端/CI |
+| I2-e | `runtime.db`/冷库(若纳入,Q1) | 5–8 d | 用户终端/CI |
+| I2-f | 删除 SQLite 路径、`db_settings` 重试、跨库提交逻辑;I1-c 的旧 HTTP 路径删除 | 2–3 d | 沙箱 |
+| I1-d | 真实 NATS 端到端 | 2–3 d | **用户终端/集群** |
+
+合计:不含 I2-e **约 22–31 天**(原计划 I1+I2 各 15 = 30 天,量级一致;I1 变小、I2 因 `v3_statistics.py` 的体量变大)。
+
+## 6. 测试与环境限制(实测)
+
+- 本机有 `postgres`/`initdb`(Homebrew `postgresql@14`)、`nats-server`、`docker`;**没有 Timescale 扩展**。
+- **沙箱里 `initdb` 失败**:`shmget` 被拒(SysV 共享内存不允许)。**`nats-server` 失败**:`listen tcp …: bind: operation not permitted`(沙箱不允许本地端口绑定)。所以 **Postgres 与 NATS 的测试只能在你的终端或 CI 跑**,沙箱里能跑的是 SQLite 特征化测试、接口层和假 JetStream 端口(`FakeJetStreamPort`)。
+- 约定:Postgres 与 live-NATS 测试做成**可选**(环境变量给出连接串才跑),和现有的 live NATS 测试(`test_telemetry_consumer.py:846`)一样;默认全量测试在沙箱里仍全绿。
+- 验收(沿用 W4):端到端 p99 < 15 s(R36-C03 负载下原为 552 s);ledger 零丢失;slice 统计与旧实现逐项一致;时钟暂停 0 次。**R36-C03 的负载需要 169 上跑,不在沙箱。**
+
+## 7. 风险
+
+1. `INSERT OR REPLACE` 的 21 处与 `rowid` 依赖:机械替换会改语义(第 4.2 节)。
+2. 并发摄入后的游标更新:SQLite 的全局串行掩盖了的竞态,在 Postgres 下会露出来;靠行锁 + 特征化测试里的并发用例。
+3. `v3_statistics.py` 11188 行,单次改动面极大:所以先抽接口、先钉行为(I2-a),不在改写的同时加功能。
+4. 分区粒度没有数据支撑(每 run 事实行数未测)。
+5. 协作冲突:PCE 仓库历史上在 `TelemetryOutbox.java` 上有别人的未提交改动(`architecture-evolution-design.md` 风险表);I1-c 删除它之前要先确认没有未提交工作。
+6. `v3_statistics.py` 与 `runtime_store.py` 的写入在 `ATTACH` 下"同事务";拆成两个 schema 后要确认所有这类写仍在同一个 Postgres 事务里,否则会引入跨事务不一致。
+
+## 8. 需要你回答的问题
+
+- **Q1(范围)**:I2 只做 `pce_state`(事实、游标、投影:瓶颈所在),还是同时迁 `runtime.db` 和冷库?**建议先只做 `pce_state`**:瓶颈和风险都在那里,`runtime.db` 可以在拿到 Postgres 实绩后再迁(它们之间只有 ATTACH 的跨库读,跨 schema 后仍可保留)。
+- **Q2(Timescale)**:接受"先普通 Postgres + 按 run 分区,Timescale 以后只用于测量事实的压缩"吗?O4(托管 Postgres 是否支持 Timescale)是否已有答案?
+- **Q3(租户隔离)**:商业架构写的是 RLS 按组织。本阶段是 (a) 只预留 `org_id` 列和角色、不启用策略(**建议**,因为组织模型还没有),(b) 现在就启用?事实表是冗余 `org_id` 还是经 `simulation_runs` 连接?
+- **Q4(环境)**:Postgres 与 live-NATS 的测试跑在哪里:你的终端(docker/本机 `postgresql@14`)、还是 169 集群上?我可以写 `docker compose` 或脚本,但沙箱里验证不了。**另外**请在有环境时帮我量一次"每个 run 的事实行数"(给分区粒度用),我可以给你一条只读 SQL。
+- **Q5(NATS 认证与集群)**:现在是无认证、单副本。每 run 短期凭据和 3 节点集群放在商业版阶段,**本阶段不做**,可以吗?
+- **Q6(D5)**:I1-a 核实后若确认 HTTP 路径与 `TelemetryOutbox` 仍在,要在 I1-d(真实 NATS 跑通)**之前**还是**之后**删?建议之后。
+
+## 9. 不做的
+
+OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁移、`runtime.db`(取决于 Q1)。
