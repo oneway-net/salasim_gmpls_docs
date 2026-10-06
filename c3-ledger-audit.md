@@ -189,3 +189,15 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 **没有做**:`NetworkNode` 按 `TechnologyParameters` 选择管理器的分支没有改成按注册表工厂(它含 `UNKNOWN → System.exit`,不可测;WSON 的构造分支按你的决定保留);`WSONResourceManager` 未动(它仍是 emulator 里唯一真正在节点上预留资源的管理器,波长维度的 emulator 侧留给 W3);emulator 的 PCRpt 带宽回声(`NotifyLSP:170`)仍然没有测试,因为构造 PCRpt 需要完整的 `LSPManager`(数据库版本、报告库),不值得为一个读 `lspte.getBw()` 的两行代码搭这套夹具。
 
 **C3/C4 到此全部结束。**
+
+## Parent golden trace 覆盖补齐(C3-P0,2026-10-06,PCE 录制于 `0d5cd7d`,只新增测试与录制文件,没有改任何 main 代码,本地,未 push)
+
+**新增** `ParentLedgerExtraGoldenTraceTest`(`es.tid.pce.parentPCE`,seed 11/22/33 各 240 步,3 个 trace 文件 `c3-parent-extra-seed*.jsonl`,共约 2000 行,另有同 JVM 确定性测试):`computeAndHoldBestCandidate`(含三种质量目标排序、被拒候选及其容量证据)、`candidateAdmissionView` 的探测、**在途竞争**(一个重路由持有 old∪new 期间,别的 LSP 被拒:持有者列表、自己重新筛选 `replacingPendingExcluded`、第二个 LSP 的重路由筛选 `replacingConfirmedExcluded`、`transientOldPathContention`)、**滞留持有**(`release` 拒绝释放、`boundStrandedHold` 收窄到证据、相等/更大/空证据不再收窄、清理后释放;证据里 `strandedSetupCleanup`/`holdBoundedToEvidence` 标志)、**D1 重复跳 ERO**(在途持有对重复的有向跳只计一次,确认账本按遍历次数计)。每步记录结果与完整状态的 SHA-256;冲突证据的每个确定性字段都在记录里,持有者的墙钟年龄(`holdAgeMs`、`createdAtEpochMs`)不在。
+
+**覆盖统计**(三个 seed):有持有者的拒绝 56/75/65 条,`stranded=true` 10/24/12,`bounded=true` 5/12/6,`replacingPendingExcluded=true` 20/21/20,`replacingConfirmedExcluded=true` 52/50/36,`transient=true` 0/2/2。
+
+**变异检查**:(1) 把 `directedLinks` 的 `put` 改成按遍历次数累加(即改变 D1)——**原来的 Parent trace 没有发现(仍然通过),新 trace 三个 seed 全部失败**,这就是原先的覆盖缺口;(2) 空证据也可收窄持有;(3) 收窄后保留旧的 candidate——都被新 trace 三个 seed 抓到。(4) 把 `transientOldPathContention` 的 `>` 改成 `>=` 没有被抓到:这不是覆盖缺口,而是等价变异(`pendingBase == pendingCandidateBase` 且稳态放得下,与"当前已超容量"矛盾,所以不会出现)。全部还原后重新通过。
+
+**验证**:PCE 全量 1514 个(比之前多 4 个),0 失败,21 个沙箱错误(基线);域内与原 Parent trace 仍逐字节重现 `a817645`。
+
+**仍未覆盖**:`ParentMdLspReroute` 内部的状态机(只有 `ParentMplsAdmissionCoordinator`/`Updater` 的接口被钉住);`PendingCompensationReconciler` 自己的决策(只钉住了它调用的 `boundStrandedHold`/`release`);`ParentRunStarter:299` 的未绑定 Parent 图。
