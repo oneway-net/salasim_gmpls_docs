@@ -159,3 +159,13 @@ emulator 侧是另一个事实:`MPLSResourceManager` **不做任何带宽准入*
 **验证**:PCE 全量 1510 个,0 失败,21 个沙箱错误(基线);**域内与 Parent golden trace、并发压力测试仍逐字节重现基线 `a817645`**;topology 单元测试 61 个(`BGP4Peer` socket 集成测试照旧失败,基线);emulator 89 个。
 
 **净效果(`git diff --shortstat`,只算 `src/main`,PCE 自 `a817645`、topology 自 C3-1 之前的 `e06ff9e`)**:PCE 255 行新增、812 行删除;topology 190 行新增、310 行删除;合计新增 445、删除 1122,净减约 680 行。删掉的是 `FrameView` 及其重放、回滚、按键释放、重复的未绑定账目路径、store 的上限与 CAS 重试、`ResourceOverlay`;新增的是 `ChargeBook` 与发布、`TedLocks`、`BandwidthDimension` 的键与容量、`Capabilities` 之外的 C3 代码。(此前写在这里的"约 1000 行/约 300 行"没有测量,已更正。)
+
+## C3 Parent 收敛完成(2026-10-06,topology `9a23bf1`、PCE `8129e68`,本地,未 push)
+
+**做了**:`ResourceDimension` 增加 `set(link, amount)`;`BandwidthDimension.set`:绑定到 store 的链路 → `store.set(linkId, max(0,bps))`(不设上限);未绑定链路 → 原来在 `ParentMplsBandwidthUpdater.apply` 里的"剩余容量(Mbps,float)写入各优先级槽"逻辑,原样搬入。Parent 的 `refreshLocked` 改走 `BandwidthDimension.INSTANCE.set`,`parentCapacities` 改走 `capacity`(`< 0` 则跳过该链路,D2 的"Parent 对无容量链路跳过"语义留在调用方);删除 Parent 私有的 `apply`。新增 3 个 `BandwidthDimensionTest`(绑定发布不设上限且夹负数、未绑定写剩余、缺链路空操作)。**没有改**:Parent 的持有/确认账本(`PENDING`、`ledgerSnapshot`、`byOwner`、证据收窄、滞留检测)、键、锁、D1–D7 的分歧。
+
+**验证**:Parent golden trace 与域内 golden trace、并发压力测试逐字节重现基线 `a817645`(未重录);PCE 全量 1510 个,0 失败,21 个沙箱错误(基线);emulator 89 个。
+
+**对原计划的偏离**:C3-P0(先补 Parent golden trace 的覆盖缺口)我没有做,因为这一步只动两处(发布与容量取数),它们已被现有 Parent trace 的 refresh/容量拒绝/先建后拆等步骤覆盖,未绑定边的 `apply` 路径由新的 `BandwidthDimensionTest` 钉住。**仍未被 trace 覆盖**:`computeAndHoldBestCandidate`、`boundStrandedHold`、D1 的重复跳 ERO(本步没碰它们,但以后动这些要先补)。`ParentRunStarter.java:299` 的未绑定 Parent 图仍然存在,`set` 的未绑定分支就是为它保留的。
+
+**C3 状态**:C3-0 到 C3-2 与 Parent 收敛完成。剩下:C3-3(清理:`LspAllocation.bandwidthBps` 并行访问器的收尾,约 90 处引用逐步换成 `amount(BANDWIDTH)`)、C4(emulator 维度化)。
