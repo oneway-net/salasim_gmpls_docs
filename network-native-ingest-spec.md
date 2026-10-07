@@ -86,9 +86,11 @@ PCE 改发逐次操作的事务之后,这三张表连同本节整节删除;`cp.t
 | 投递尝试与日志 | `exp.command_log` |
 | 太阳凌日等几何断链 | `fm.fault(origin='geometry')`,时刻取窗口的起止 |
 
-## 7. 告警——**现在没有来源**
+## 7. 告警——**网络告警现在没有来源**
 
-今天没有任何组件发告警。两条路,**需要你定**:
+**先澄清**:产品里已有 ALARMS 页面和 `alarm_acknowledgements` 表,但它们的唯一来源是**管理操作失败**:`routers/ops.py` 把状态为 `failed` 的编排器生命周期操作合成为 `kind='operation-failure'` 的告警(已核实)。这是**管理面**的事件,不是网络里的故障——它们对应 `exp.command_log` 的失败记录,**不进 `fm.alarm`**;操作员的确认(`alarm_acknowledgements`)是**档案侧的状态**,尚未在新设计里安放(倾向 `exp` 下一张确认事件表,**未设计**)。
+
+**网络**故障告警(链路断、LSP 断)今天没有任何组件发。两条路,**需要你定**:
 
 - **(a) 由摄入合成**:对每条 `net.te_link_state_event(oper='down')` / `te.lsp_state_event(oper='down')`(首次),合成一个 `fm.alarm` + `raise`(`observer` = 该状态事件的观察者,`fault_id` = 该时刻覆盖该链路的故障);对应的 `up` 合成 `clear`。**这样"检测时延" = 该观察者报告链路 down 的时刻 − 故障注入时刻**,与旧实现里"PCE 确认故障"的语义一致。
 - **(b) 等节点代理**:`observer = agent:<node>` 直接发(NETCONF 通知),检测会更早。**预留列已就位,没有数据**。
