@@ -199,16 +199,21 @@ CREATE TABLE stats.dist (
 CREATE TABLE stats.entity_slice (                          -- 取代 byService / byTunnel 数组
   run_id text NOT NULL, slice_index int NOT NULL,
   entity_kind text NOT NULL CHECK (entity_kind IN ('service','tunnel')),
-  entity_id text NOT NULL, direction text NOT NULL DEFAULT 'forward',
-  commissioned boolean NOT NULL, retired boolean NOT NULL DEFAULT false, retired_at_ms bigint,
+  entity_id text NOT NULL,
+  service_id text NOT NULL,                                               -- 隧道所属的服务(服务行就是它自己)
+  direction text NOT NULL DEFAULT '',                                     -- 服务行 '':它跨方向;隧道行是该腿的方向
+  commissioned boolean NOT NULL, retired boolean NOT NULL DEFAULT false,
   state_at_boundary text NOT NULL,
+  first_slice int NOT NULL,                                               -- 实体进入登记表的第一个切片(累计元数据的来源)
   observation_ms bigint NOT NULL, up_ms bigint NOT NULL, degraded_ms bigint NOT NULL, unavailable_ms bigint NOT NULL,
-  interruption_events int NOT NULL DEFAULT 0, switchovers int NOT NULL DEFAULT 0, path_switches int NOT NULL DEFAULT 0,
-  protection_healthy_ms bigint,
+  degradation_events int NOT NULL DEFAULT 0, interruption_events int NOT NULL DEFAULT 0,
+  switchovers int NOT NULL DEFAULT 0, path_switches int NOT NULL DEFAULT 0,
   cum_observation_ms bigint NOT NULL, cum_up_ms bigint NOT NULL,           -- 截至本切片的累计(前缀和),封账时写
   cum_degraded_ms bigint NOT NULL, cum_unavailable_ms bigint NOT NULL,
+  cum_degradation_events int NOT NULL DEFAULT 0, cum_interruption_events int NOT NULL DEFAULT 0,
+  cum_switchovers int NOT NULL DEFAULT 0, cum_path_switches int NOT NULL DEFAULT 0,
   cum_availability_pct double precision,                                  -- 与 _availability_values 同一公式(Python 里唯一一份),观测为 0 时 NULL
-  PRIMARY KEY (run_id, entity_kind, entity_id, direction, slice_index)
+  PRIMARY KEY (run_id, entity_kind, entity_id, slice_index)
 ) PARTITION BY LIST (run_id);
 CREATE INDEX ON stats.entity_slice (run_id, slice_index, entity_kind, cum_availability_pct);   -- 分页 API:第 k 片按累计可用性排序
 
@@ -618,3 +623,23 @@ G1 的最后三项。**对拍对象一律是生产的 `get_slice`**(独立审计
 - **局限**:扰动一个叶子看不出"只在 A 和 B 同时变时才有效"的联合依赖,所以"无影响"=**这 6 份文档里无影响**;`reduce` 为 NULL 的指标若日后出现在趋势里,前端 `requireKind` 仍会报错,不会悄悄画错。
 
 **还没做**:构建器本身(从事实直接写 `measure`/`dist`/`entity_slice`,取代 `_build_slice_result`)、两个每-PCE 列表的归属、19 个无法确定的指标、`unit` 的来源。
+
+## 23. 构建器第一族:可用性(2026-10-07)
+
+**范围的决定**:`_build_slice_result` 有约 2300 行,可用性只是其中一块(`_build_service_availability` 约 650 行,还夹着墙钟投影),一次替换整个函数没有可验证的中间状态。所以**按指标族一族一族换,每一族单独对拍**。第一族是可用性——区间推导(第 14–21 节)已经证明了它的数字,构建器要证明的是"落成 `entity_slice` 行、再装回文档形状"这一步。
+
+**做了什么**:`salasim_backend/slice_builder.py`
+- `build_entity_slices(services, facts, window)` → 每个实体每个切片一行 `EntitySliceRow`(切片值 + 截至本切片的累计),只用 `availability_intervals`;行从实体进入登记表的切片开始。
+- `assemble_sections(rows, …, index)` → `serviceAvailability` / `tunnelAvailability`:层聚合、`byService`、`byTunnel`,与 store 发布的同一形状。
+- `DECLARED_DIFFERENCES`:store 的这两节里**构建器不产出**的字段——`clockPolicy`、`evidenceComplete`/`evidenceSource`/`stateModel`、`faultTimeBasis`、`faultWindowIntegration`、`pathSevered*`、`planned/predicted/unresolvedFaultWindowCount`、`uncovered/unreportedPathBreakageCount`、`runtimeRegistryEvidence`、每条腿的 `pathKey`。全是旧证据体系或被决定不要的东西(第 15–17 节、D-16)。
+
+**对拍**:第 21 节的随机场景(双向服务、路径切换、迟到重建,共 12×25 + 8×20 个)里,**行装回后的两节必须与 store 发布的相等**:除声明差异外每个键相等,构建器也不得多出任何键。**突变检查**:累计倒换不累加、累计路径切换不累加、`retiredAt` 丢失、行从第一个切片之前开始,四种都被抓到;第五种(隧道行 `up_ms` 写错)**起初没被抓到**——装回时隧道的值由观测与不可用算出,根本不读 `up_ms`;所以对拍里加了**行自身的算术不变量**(`up + degraded + unavailable = observation`,切片与累计各一),再测被抓到。后端全量 2385 通过。
+
+**对 `entity_slice` 建表语句的修正(本次实现暴露的,第 6.3 节已改)**:
+1. 文档的累计里有 `degradationEvents`/`interruptionEvents`/`switchovers`(隧道:`pathSwitches`),旧 DDL 的累计列只有四个时长列 → 加 `cum_degradation_events`、`cum_interruption_events`、`cum_switchovers`、`cum_path_switches`;切片值里也缺 `degradation_events`。
+2. 旧 DDL 有 `protection_healthy_ms`:它恒等于 `up_ms`(`protectionHealthyPct` 就是 up/观测)→ 删。
+3. `retired_at_ms` 删:文档的 `retiredAt` 是控制面的 `ctl.service.stopped_at`(墙钟时间戳,用于展示),装配时联表取;可用性只消费 `stopped_sim_ms`(第 16 节)。
+4. `direction`:服务跨方向(第 21 节,一个服务一行),原来默认 `'forward'` 会让双向服务看起来只有正向 → 服务行为 `''`,隧道行是腿的方向;主键去掉 `direction`(实体 id 已唯一)。
+5. 加 `service_id`(隧道所属服务)与 `first_slice`(累计元数据的来源)。
+
+**还没做**:构建器接进 store(目前只有对拍,`get_slice` 仍走旧的游标扫描;接入需要从库里读事实、`wall_to_sim` 之外的 sim 停止时刻 `stopped_sim_ms` 与创建时刻,而且**已有 2385 个测试里有一批在测故障窗口并入,它们编码的是已被决定不要的行为**,接入时要逐个处理);其余指标族(服务/隧道状态计数、链路、控制面、跨快照窗口、信令积压……)按同样的办法一族一族换;每-PCE 两个列表的归属。
