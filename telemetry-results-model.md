@@ -20,7 +20,7 @@ L1 时间线      实体状态区间 entity_interval(服务/隧道/保护/物理
 L2 切片结果    measure(窄表:一切标量与计数映射)+ dist(可合并分布)
                + entity_slice(每服务/隧道一行)+ reason_object + link_diag + link_event
 L3 运行结果    run_measure(按指标注册表的聚合规则,由 L2 归约)+ fault_result
-L4 文档缓存    slice_document(把 L2/L3 装配成现有 UI 要的 JSON,带内容哈希;可随时丢弃重建)
+L4 文档缓存    slice_state + slice_document(把 L2/L3 装配成现有 UI 要的 JSON,带内容哈希;可随时丢弃重建)
 横切           metric_def:每个指标的单位、类型、"跨切片怎么聚合"——聚合语义成为数据
 ```
 
@@ -73,24 +73,35 @@ L4 文档缓存    slice_document(把 L2/L3 装配成现有 UI 要的 JSON,带�
 
 ```sql
 CREATE TABLE stats.metric_def (
-  metric_id   smallint PRIMARY KEY,
-  code        text NOT NULL UNIQUE,         -- 'links.network_utilization_pct'
+  metric_id   smallint PRIMARY KEY,         -- 取值写在 metric_registry.json 里,只增不改(不在建库时临时编号)
+  code        text NOT NULL UNIQUE,         -- 文档叶子路径模板,如 'links.networkUtilizationPct'、'controlPlane.*.operations.total'
   family      text NOT NULL,                -- 'links','services','control_plane',…(与 UI 的分组一致)
-  unit        text NOT NULL CHECK (unit IN ('count','ms','bps','pct','ratio','us')),
-  kind        text NOT NULL CHECK (kind IN ('gauge','flow','ratio','stock','extremum')),
-  reduce      text NOT NULL CHECK (reduce IN ('sum','mean','wmean','max','min','last')),   -- 跨切片/跨桶怎么聚合
-  weight_id   smallint REFERENCES stats.metric_def(metric_id),                             -- wmean 的权重指标
-  numerator_id smallint REFERENCES stats.metric_def(metric_id),                            -- ratio:分子/分母指标,聚合时重算
+  integral    boolean NOT NULL,             -- 构建器按它固定数值类型:真 → 写整数、装配为 JSON 整数
+  scopes      text NOT NULL CHECK (scopes IN ('global','domain','both')),   -- 实测三种都有(155 / 7 / 266)
+  dims        smallint NOT NULL CHECK (dims BETWEEN 0 AND 2),               -- 维度个数;实测 0 维 249、1 维 163、2 维 16、≥3 维 0
+  dim_names   text[] NOT NULL DEFAULT '{}', -- 维度名,如 {'state'}、{'operation','outcome'}
+  unit        text CHECK (unit IN ('count','ms','bps','pct','ratio','us')),  -- 可空:目前没有来源,不靠后缀猜
+  kind        text CHECK (kind IN ('gauge','flow','ratio','stock','extremum')),          -- dist 指标靠 hist_bounds 非空识别,不另设 kind
+  reduce      text CHECK (reduce IN ('sum','mean','wmean','max','min','last')),  -- 可空 = 只在切片里展示,不参与跨切片/跨桶聚合
+  weight_id   smallint REFERENCES stats.metric_def(metric_id),                    -- wmean 的权重指标
+  numerator_id smallint REFERENCES stats.metric_def(metric_id),                   -- ratio:分子/分母指标,聚合时重算
   denominator_id smallint REFERENCES stats.metric_def(metric_id),
-  scoped      boolean NOT NULL,             -- 可按 PCE 域取值(UI 的 scoped 组)还是只有全局
-  dims        text[] NOT NULL DEFAULT '{}', -- 该指标用到的维度名,如 {'state'}、{'operation','outcome'}
-  description text NOT NULL
+  hist_bounds double precision[],           -- dist 指标的固定桶边界(定下后不能改,否则不能合并);非 dist 指标为 NULL
+  description text,
+  CHECK ((kind IS NULL) = (reduce IS NULL)),
+  CHECK (reduce IS DISTINCT FROM 'wmean' OR weight_id IS NOT NULL),
+  CHECK (kind IS DISTINCT FROM 'ratio' OR (numerator_id IS NOT NULL AND denominator_id IS NOT NULL))
 );
 ```
 
+- **可空的语义属性(2026-10-07 审阅修订)**:G2 实测注册表有 **428** 个指标,而 `kind`/`reduce` 只有前端 `TREND_FIELD_KINDS` 里约 300 个趋势字段有声明,`unit` 没有任何来源。所以这些列可空:`reduce IS NULL` 的指标只在切片文档里展示,`run_measure` 与图表分桶**只处理 `reduce` 非空的指标**;一个测试保证"前端趋势读到的每个指标 `reduce` 非空"。`unit` 在找到来源前保持 NULL。
+- **`scopes` 取代 `scoped boolean`**:布尔值表达不了实测的"只在域上"(7 个指标)。
+- **`integral`**:同一指标在旧文档里有时是 `5` 有时是 `5.0`(117 个非整数指标里的一部分);新构建器按 `integral` 固定类型,装配结果的 JSON 文本因此稳定。
+- **`hist_bounds`** 取代"`metric_def` 旁的一张小表"(第 6.2 节)。
+
 - 这张表**取代**前端 `bucket-trend.mjs` 的 flow/gauge/ratio/histogram 规则和 `run-summary.mjs` 的 5 种汇总模式——两处现在各自硬编码,且与后端没有共同定义。`kind='flow'` ⇒ `reduce='sum'`;`'gauge'` ⇒ 加权平均;`'ratio'` ⇒ 用分子分母**重算**(不能平均比率);`'extremum'` ⇒ `max`/`min`;`'stock'` ⇒ `last`。
 - **内容是静态参考数据**,随建库脚本插入(不是迁移);代码里有同一份常量,**一个测试保证两边一致**,另一个测试保证"UI 读的每条字段路径都对应一个 `metric_id`"(第 11 节)。
-- 完整清单在实现时从 `_build_slice_result` 与 `trend-rows.mjs` 的字段路径**机械导出**(两份调研已列出全部路径);本文不手写 100+ 行。
+- 完整清单是 `salasim_backend/metric_registry.json`(第 18 节,由 `scripts/derive-metric-registry.py` 从语料机械导出,只增不改);建库脚本的种子数据由它生成,本文不手写 428 行。语义属性从 `trend-rows.mjs` 的"趋势字段 ← 文档路径"对应导出。
 
 ## 5. L1 时间线:`entity_interval`(可用性的真相)
 
@@ -143,17 +154,18 @@ CREATE TABLE stats.measure (
   run_id text NOT NULL, slice_index int NOT NULL,
   scope text NOT NULL,                      -- '*' = 全局;否则 PCE 标识(如 'domain:3')
   metric_id smallint NOT NULL REFERENCES stats.metric_def,
-  dim_a text NOT NULL DEFAULT '', dim_b text NOT NULL DEFAULT '',     -- 至多两维:状态、原因、操作类型、结果、链路类型…
-  value double precision NOT NULL,          -- 计数/带宽(bps ≤ 1e11)在 double 里都精确(< 2^53)
+  dim_a text NOT NULL DEFAULT '', dim_b text NOT NULL DEFAULT '',     -- 至多两维:状态、原因、操作类型、结果、链路类型…(≥3 维是登记错误)
+  value double precision NOT NULL,          -- 计数/带宽(bps ≤ 1e11)在 double 里都精确(< 2^53);integral 指标由构建器写整数值
   weight double precision,                  -- 加权平均用(例如样本数);其它为 NULL
   PRIMARY KEY (run_id, slice_index, scope, metric_id, dim_a, dim_b)
 ) PARTITION BY LIST (run_id);
 CREATE INDEX ON stats.measure (run_id, scope, metric_id, slice_index);          -- "某指标随切片的序列"(UI 的主读法)
 ```
 
-- **一张窄表装下**:`services.states`(`dim_a`=状态)、`tunnels.healthStates`、`degradationReasons.byReason`、`failureReasons.byReason`、`protection.countsByKind`、`connectionReuse.flow`、`controlPlane.<op>.operations.*`、`controlPlane.<op>.routeResults.*`(`dim_a`=操作、`dim_b`=结果)、`signalingBacklog.*`、`links.*` 的聚合、`trafficDemand.*`、`routingStages.*`、`crossSnapshotWindow.*` 的计数……**约 100 个指标 × 若干维度取值**。
+- **一张窄表装下**:`services.states`(`dim_a`=状态)、`tunnels.healthStates`、`degradationReasons.byReason`、`failureReasons.byReason`、`protection.countsByKind`、`connectionReuse.flow`、`controlPlane.<op>.operations.*`、`controlPlane.<op>.routeResults.*`(`dim_a`=操作、`dim_b`=结果)、`signalingBacklog.*`、`links.*` 的聚合、`trafficDemand.*`、`routingStages.*`、`crossSnapshotWindow.*` 的计数……**实测 428 个指标**(第 18 节;原估"约 100 个"偏低)× 若干维度取值。
+- **维度上限是硬规则**:实测没有三维指标,所以不做"第三维折进 `dim_b`"——`dim_b` 里混入复合值会让按 `dim_b` 的查询失去语义。一个数据决定键的映射如果出现第三层,**注册时报错**,由人决定拆成两个指标还是改文档形状。(代码待跟进:`slice_decomposition.py` 现在的 `_EXTRA_DIM_SEP` 折叠要改成报错。)
 - **全局与每域是同一张表的不同 `scope`**(T8,消除 P2 的重复):全局 = `scope='*'`,域 = `scope=<pce>`;`scoped=false` 的指标只有 `'*'` 行。
-- **窄表还是宽表?** 评估后选窄表:UI 的主要读法是"某个指标随切片的序列"(`WHERE run, scope, metric_id ORDER BY slice_index`,直接走上面的索引),加新指标不改 schema,聚合规则由注册表驱动;"一个切片的全部指标"是 `WHERE run, slice`(PK 前缀,约 2–3 千行,快)。**代价**:列类型统一为 `double`、没有逐列的 `CHECK`——由注册表的 `unit`/`kind` 和一个"每个 `metric_id` 的取值范围"测试兜底。宽表按段建(`slice_links`、`slice_traffic`…)类型更清楚,但每个新指标要改表、序列查询要 `UNION`、聚合规则仍要散落在代码里。
+- **窄表还是宽表?** 评估后选窄表:UI 的主要读法是"某个指标随切片的序列"(`WHERE run, scope, metric_id ORDER BY slice_index`,直接走上面的索引),加新指标不改 schema,聚合规则由注册表驱动;"一个切片的全部指标"是 `WHERE run, slice`(PK 前缀;按第 11 节修订后的估算约 1 万行/切片,仍是一次索引范围扫描)。**代价**:列类型统一为 `double`、没有逐列的 `CHECK`——由注册表的 `unit`/`kind` 和一个"每个 `metric_id` 的取值范围"测试兜底。宽表按段建(`slice_links`、`slice_traffic`…)类型更清楚,但每个新指标要改表、序列查询要 `UNION`、聚合规则仍要散落在代码里。
 - **示例查询(取代前端的客户端聚合)**:
   - 原因排名前 10(取代 `rankedReasons`):
     ```sql
@@ -171,13 +183,13 @@ CREATE TABLE stats.dist (
   metric_id smallint NOT NULL REFERENCES stats.metric_def,
   dim_a text NOT NULL DEFAULT '', dim_b text NOT NULL DEFAULT '',
   n bigint NOT NULL, sum double precision NOT NULL, min double precision, max double precision,
-  mean double precision, p50 double precision, p95 double precision,      -- 精确值:由该切片的原始样本在构建时算出,展示用
-  hist int[],                                                             -- 固定边界的直方图计数,供合并
+  p50 double precision, p95 double precision,                             -- 精确值:由该切片的原始样本在构建时算出,展示用;mean = sum/n,不单存(R15)
+  hist int[],                                                             -- 按 metric_def.hist_bounds 的直方图计数,供合并
   PRIMARY KEY (run_id, slice_index, scope, metric_id, dim_a, dim_b)
 );                                                                        -- 普通表(约 2.3 万行/run,低于 O3 判据)
 ```
 
-- **每切片的 `p50/p95` 仍是精确值**(从当时的原始样本算,与现有语义一致);`hist` 是**额外**的:按每个指标固定的对数边界(边界写在 `metric_def` 旁的一张小表里,**同一指标永远同一组边界**,否则不能合并)。**合并后的百分位是近似的**(误差 ≤ 一个桶的宽度),所以**读时必须标明"近似"**,UI 分桶不再把百分位置 `null`(P4)。
+- **每切片的 `p50/p95` 仍是精确值**(从当时的原始样本算,与现有语义一致);`hist` 是**额外**的:按每个指标固定的对数边界(边界写在 `metric_def.hist_bounds`,**同一指标永远同一组边界**,否则不能合并)。**合并后的百分位是近似的**(误差 ≤ 一个桶的宽度),所以**读时必须标明"近似"**,UI 分桶不再把百分位置 `null`(P4)。
 - **PCE 自己上报直方图的**那类事实(`metricType='latency_histogram'`,准入筛选),把它们的桶映射/重分到注册表的固定边界(**未核实**:PCE 的桶边界是否固定、与我选的对数边界如何对齐——要看 `admission_metrics.py` 的 `histogram_summary` 和 PCE 的发射端)。
 - **数据面时延**(`dataPlaneLatency`):原始样本已在 `delay_sample` 里(每隧道每切片一行),所以它的**精确**整 run 百分位也可以直接对 `delay_sample` 算;`dist.hist` 是为了在不扫样本的情况下合并。
 
@@ -193,9 +205,12 @@ CREATE TABLE stats.entity_slice (                          -- 取代 byService /
   observation_ms bigint NOT NULL, up_ms bigint NOT NULL, degraded_ms bigint NOT NULL, unavailable_ms bigint NOT NULL,
   interruption_events int NOT NULL DEFAULT 0, switchovers int NOT NULL DEFAULT 0, path_switches int NOT NULL DEFAULT 0,
   protection_healthy_ms bigint,
+  cum_observation_ms bigint NOT NULL, cum_up_ms bigint NOT NULL,           -- 截至本切片的累计(前缀和),封账时写
+  cum_degraded_ms bigint NOT NULL, cum_unavailable_ms bigint NOT NULL,
+  cum_availability_pct double precision,                                  -- 与 _availability_values 同一公式(Python 里唯一一份),观测为 0 时 NULL
   PRIMARY KEY (run_id, entity_kind, entity_id, direction, slice_index)
 ) PARTITION BY LIST (run_id);
-CREATE INDEX ON stats.entity_slice (run_id, slice_index, entity_kind);
+CREATE INDEX ON stats.entity_slice (run_id, slice_index, entity_kind, cum_availability_pct);   -- 分页 API:第 k 片按累计可用性排序
 
 CREATE TABLE stats.reason_object (                         -- 取代 degradationReasons.byService / failureReasons.byTunnel,以及 /reason-objects
   run_id text NOT NULL, slice_index int NOT NULL,
@@ -205,7 +220,7 @@ CREATE TABLE stats.reason_object (                         -- 取代 degradation
 );                                                         -- 普通表(行数与原因对象数成正比,低于 O3 判据)
 ```
 
-- **`entity_slice` 是由 `entity_interval` 在切片封账时算出的物化(可重建)**,不是真相。累计量**不存**:用窗口函数 `SUM(up_ms) OVER (PARTITION BY entity_id ORDER BY slice_index)`(前端三个累加器的服务端等价物)。没有 `evidence_complete` 列,也没有"在第一个证据不全的切片处停止累计"的逻辑——区间模型里 `complete` 恒为 true(第 17 节),按 R15 删除。
+- **`entity_slice` 是由 `entity_interval` 在切片封账时算出的物化(可重建)**,不是真相。**累计量存在行上**(2026-10-07 审阅修订;旧版用窗口函数现算):分页 API 的主读法是"第 k 片按累计可用性排序取第 N 页",现算要对 k × 实体数行做窗口计算再全量排序,每页一次。切片按序封账,累计只是前一切片的值加本切片;迟到的账本事实本来就重算"该切片及之后",顺带重写这些列。**这不是接力游标**:任何时候都能由 `entity_interval` 对 `[run_start, slice_end]` 求和重建,一致性由测试钉住。没有 `evidence_complete` 列,也没有"在第一个证据不全的切片处停止累计"的逻辑——区间模型里 `complete` 恒为 true(第 17 节),按 R15 删除。
 - 有了 `entity_slice`,UI 的服务/隧道表可以**服务端分页、排序、过滤**(P9);`/reason-objects` 变成 `SELECT DISTINCT layer, reason, object_id`。
 
 ### 6.4 链路:`link_diag`、`link_event`
@@ -272,18 +287,32 @@ CREATE TABLE stats.run_measure (                           -- 取代前端的 su
 ## 8. L4 文档缓存
 
 ```sql
-CREATE TABLE stats.slice_document (
-  run_id text NOT NULL, slice_index int NOT NULL, scope text NOT NULL DEFAULT '*',   -- '*' = 全局文档;PCE = 该域被裁剪后的文档(UI 按 scope 缓存)
+CREATE TABLE stats.slice_state (             -- 小行:轮询/索引查询只读它
+  run_id text NOT NULL, slice_index int NOT NULL,
   status text NOT NULL CHECK (status IN ('PARTIAL','COMPLETE','UPDATING')),
-  revision bigint NOT NULL,                   -- = 内容哈希的前 8 字节(UI 用它做增量同步,与现状的 revision 同义)
+  update_pending boolean NOT NULL DEFAULT false,
+  content_rev bigint,                         -- = 全局文档内容哈希的前 8 字节(API 里仍叫 revision,UI 增量同步用,语义不变)
+  content_hash bytea,
+  domain_ids text[] NOT NULL DEFAULT '{}',    -- 该切片有结果的 PCE(UI 的域选择器;不再展开 JSON 取)
+  sealed_at timestamptz,
+  PRIMARY KEY (run_id, slice_index)
+) WITH (fillfactor = 80);
+
+CREATE TABLE stats.slice_document (          -- 内容:只追加/整行替换,不原地更新
+  run_id text NOT NULL, slice_index int NOT NULL, scope text NOT NULL DEFAULT '*',   -- '*' = 全局文档;PCE = 该域被裁剪后的文档
   content_hash bytea NOT NULL,
   document jsonb NOT NULL,                    -- 装配后的 JSON,**与现有 get_slice 返回的形状一致**
   assembled_at timestamptz NOT NULL,
-  PRIMARY KEY (run_id, slice_index, scope)
-) WITH (fillfactor = 80);
+  PRIMARY KEY (run_id, slice_index, scope),
+  FOREIGN KEY (run_id, slice_index) REFERENCES stats.slice_state ON DELETE CASCADE
+);
 ```
 
-- **只是缓存**(T2):可由 L2/L3 加事实**装配**得到,丢了就重装;**不是真相**。它取代 `database-redesign.md` 的 `slice_result_body`(那里它是真相,这里降为缓存)。`status`、`content_hash` 仍在小行上(轮询只读它们)。
+- **头/体分开(恢复 `database-redesign.md` O2 的拆分,2026-10-07 审阅修订)**:旧版把 `status`/`revision`/哈希与约 118 KB 的文档放在同一行,状态的每次原地更新都要重写这一行;`fillfactor=80` 只对小行有意义。现在状态在 `slice_state`(小行、HOT 更新),文档在 `slice_document`(不设 `fillfactor`)。
+- **全局文档在封账时写,域文档按需装配**:封账事务写 `scope='*'` 一行并删除该切片已缓存的域文档;某个域的文档在**第一次被读时**装配并缓存。这样封账不必一次写 23 份,没人看的域不占空间。
+- **命名**:`content_rev`(内容哈希派生,只用于判等)与 `stats.slice_revision.input_rev`(输入版本号,单调递增)是两种东西,旧版都叫 `revision`,现在分开。
+
+- **只是缓存**(T2):可由 L2/L3 加事实**装配**得到,丢了就重装;**不是真相**。它取代 `database-redesign.md` 的 `slice_result_body`(那里它是真相,这里降为缓存)。`status`、`content_hash` 在 `slice_state` 小行上(轮询只读它们)。
 - **为什么要有它**:UI **全量加载所有切片**(n × ~118 KB),装配 ~20 张表成一份 JSON 的成本不该落在每次读上;缓存让读路径仍是"一行一取"。UI 的 `revision` 增量同步机制不变。
 - **故障投影**(P6)不再在读时叠加:物理链路可用性、`links.faults`/`stateChanges` 在**写时**进 `measure`/`link_event`,装配时直接取;故障确认到达 → 受影响切片的修订号 bump → 重装配。内容哈希里包含故障修订号(沿用现有 `event_revision`)。
 - 装配器(Python)**按注册表的字段路径表**把行拼回 JSON:路径表 = UI 调研列出的全部字段路径,是一个**数据驱动**的映射,而不是 2000 行的 `_build_slice_result` 手写。
@@ -291,8 +320,8 @@ CREATE TABLE stats.slice_document (
 ## 9. 构建、重建与一致性
 
 1. **摄入事务**(沿用 O7):事实 + `fact_index` + 类型化内容;**同一事务**更新 `entity_interval`(追加或实体局部重放);bump `slice_revision`。
-2. **切片封账**(沿用现有触发条件:证据齐全、前一切片完成……):在**一个事务**里 `DELETE … WHERE run, slice` 再 `INSERT` 该切片的 `measure`/`dist`/`entity_slice`/`reason_object`/`link_diag`/`link_event`,写 `slice_document`(`status='COMPLETE'`)。幂等:同输入重放得到同样的行。
-3. **迟到事实**:测量事实只重算**该切片**;账本事实重算**该切片及之后**(沿用现有语义,但因为可用性是区间,**实际只需重算受影响实体的区间**,再重切受影响切片)。`updatePending` 仍是文档上的标记(`status='UPDATING'` 的来源)。
+2. **切片封账**(沿用现有触发条件:证据齐全、前一切片完成……):在**一个事务**里 `DELETE … WHERE run, slice` 再 `INSERT` 该切片的 `measure`/`dist`/`entity_slice`/`reason_object`/`link_diag`/`link_event`(`entity_slice` 连同累计列),写 `slice_state`(`status='COMPLETE'`、`content_rev`、`domain_ids`)与全局 `slice_document`,删除该切片已缓存的域文档。幂等:同输入重放得到同样的行。
+3. **迟到事实**:测量事实只重算**该切片**;账本事实重算**该切片及之后**(沿用现有语义,但因为可用性是区间,**实际只需重算受影响实体的区间**,再重切受影响切片)。`updatePending` 是 `slice_state.update_pending`(`status='UPDATING'` 的来源)。
 4. **构建期读快照**:`REPEATABLE READ` 只读;发布时校验修订号(沿用 `database-redesign.md` 第 4.4 节)。
 5. **运行汇总**:run 终结时(以及迟到事实重开后)重算 `run_measure`、`service_result`。
 
@@ -307,24 +336,28 @@ CREATE TABLE stats.slice_document (
 | G5 | **物理链路可用性依赖控制面的故障确认**(新的跨 schema 依赖) | 确认写入必须 bump 对应切片的 `slice_revision`;写进并发/契约测试 |
 | G6 | **每域标量的消除要求 UI 的 `domainResults` 路径由装配器合成** | 装配器的路径表 + G2 的黄金测试覆盖 `scope≠'*'` |
 
-## 11. 体量估算(假设显式,**未测**)
+## 11. 体量估算(假设显式,**`measure` 的指标数已实测,其余未测**)
 
-假设:100 个切片、22 个 PCE 域、约 120 个指标(其中约 70 个 `scoped`)、每个指标平均 3 个维度取值(状态/原因/操作…),500 个服务、2000 条隧道。
+**2026-10-07 审阅修订**:旧版假设约 120 个指标(70 个 `scoped`),G2 实测是 **428 个**:全局 421 个(其中 266 个域上也有)、域上 273 个;0 维 249、1 维 163、2 维 16。其余假设不变:100 个切片、22 个 PCE 域、500 个服务、2000 条隧道;**有维度的指标平均 3 个取值(假设)**,于是每个指标平均 0.58 × 1 + 0.42 × 3 ≈ 1.84 行。
 
 | 表 | 行数 / run | 估计大小 |
 |---|---|---|
-| `measure` | 100 × (50 全局指标 × 3 + 70 域指标 × 22 × 3) ≈ 100 × 4800 ≈ **48 万** | 窄行 ~70 B(含索引 ~2×)≈ **60–70 MB** |
+| `measure` | 100 × (421 × 1.84 + 273 × 1.84 × 22) ≈ 100 × (775 + 11 050) ≈ **118 万** | 堆 ~80 B + 主键 ~60 B + 序列索引 ~50 B ≈ 190 B/行 ≈ **约 220 MB** |
 | `dist` | 100 × (10 指标 × 23 作用域) ≈ 2.3 万 | 含 64 桶 `int[]` ≈ 400 B/行 ≈ 10 MB |
-| `entity_slice` | 100 × (500 + 2000) = **25 万** | ~110 B ≈ 30–40 MB |
+| `entity_slice` | 100 × (500 + 2000) = **25 万** | 加累计列后 ~150 B ≈ 40–50 MB |
+| `link_diag` | 100 × 23 作用域 × 前 100 ≈ **23 万** | ~150 B ≈ 35 MB |
 | `entity_interval` | 每实体几条到几十条 ≈ 2500 × 20 ≈ 5 万 | ~120 B ≈ 6 MB |
-| `slice_document` | 100 × (1 全局 + 22 域) | 全局 ~118 KB;每域更小;**≈ 12 MB(全局)+ 数十 MB(域)** |
-| 合计 | | **约 150–250 MB / run**(对照:现在一个切片 118 KB × 100 ≈ 12 MB 的 JSON + 事实) |
+| `slice_document` | 100 × 1 全局 + 被读过的域 | 全局 ~118 KB × 100 ≈ **12 MB**;域文档按需 |
+| 合计 | | **约 330–400 MB / run**(旧版 150–250 MB;对照:现在一个切片 118 KB × 100 ≈ 12 MB 的 JSON + 事实) |
+
+- **`measure` 占大头,且几乎全部来自域作用域**(273 × 22)。如果真实数据证实这一点,优先的缓解是第 10 节 G3 的两条:只为 UI 实际可选的域存每域标量,或把低价值指标降为只存全局。不预先做。
+- **校正方法(不需要 Postgres,在用户本机跑)**:真实 run 的 `pce_state.sqlite3` 里已经存着每个切片完整的 JSON(`simulation_slice_results.result`)。在 `tools/measure-run-volume.py` 里对每份文档调用 `slice_decomposition.decompose`,直接得到**真实 22 个域下每切片的 `measure` 行数**和维度取值分布,替换上表的 1.84 假设;`byService`/`byTunnel`/`diagnosticLinks` 的长度给出 `entity_slice`/`link_diag` 的真实行数。
 
 **这比现状大一个数量级**——换来的是可查询、可分页、可跨 run 聚合、可局部重建。**是否值得,取决于你要不要跨 run 分析和服务端分页**(第 12 节问题 1)。体量假设用 `tools/measure-run-volume.py` 在真实 run 上校正(**还需要把 `measure`/`entity_slice` 的估算加进工具**:切片数、PCE 数、服务数、隧道数)。
 
 ## 12. 与现有设计和文档的关系
 
-**被本文取代**:`database-redesign.md` 第 4.4 节的 `slice_result` + `slice_result_body`(降为本文的 `slice_document` 缓存)、第 4.5 节的 `service_current` 与 `service_availability_current`(`service_current` 变成 `entity_interval` 开放区间上的视图;`service_availability_current` 是可用性游标,被区间取代;`tunnel_current`/`protection_current` **仍物化**,见第 5 节)、`delay_sample` 以外的所有结果表示。
+**被本文取代**:`database-redesign.md` 第 4.4 节的 `slice_result` + `slice_result_body`(头/体拆分保留,变成本文的 `slice_state` + `slice_document`;体降为缓存)、第 4.5 节的 `service_current` 与 `service_availability_current`(`service_current` 变成 `entity_interval` 开放区间上的视图;`service_availability_current` 是可用性游标,被区间取代;`tunnel_current`/`protection_current` **仍物化**,见第 5 节)、`delay_sample` 以外的所有结果表示。
 **不变**:事实层(`fact_index` + 内容表 + 游标 + 幂等)、链路批次(临时 chunk + `link_batch.metrics`)、`ctl` schema、并发模型与锁序、分区与清理、`org_id` 预留、"没有迁移机制"。
 **对 I2 的影响**:这是一次**结果层的重写**,不是换存储。`_build_slice_result`(~2000 行)与 `_build_service_availability`(~700 行)被"构建器(写 L2)+ 装配器(读 L2 → JSON)"取代。我现在估 I2 **约 50–75 天**(±50%;上一版 32–46),**增量主要在:可用性区间化 + 对拍(G1)、装配器与黄金测试(G2)、指标注册表的导出**。若只做存储替换而不动结果层,仍是上一版的估算。
 

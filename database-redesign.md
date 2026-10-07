@@ -51,7 +51,7 @@ stats.*  (只认 run_id,不认 deployment;只有高体量表按 run_id LIST 分�
 
 **表数:41 → 38**(`ctl` 15 + `cfg` 1 + `stats` 22;第 11 节的优化后 `stats` 里 `link_sample` 不再有、`slice_result` 拆成两张,总数不变)。数量不是目的;目的是去掉不变量的隐含部分。
 
-> **2026-10-07 审阅修订**:`service_current` 改为视图、`service_availability_current` 删除、`ctl.service` 增加 `stopped_sim_ms`;结果层(`slice_result*` 与所有结果表)以 `telemetry-results-model.md` 为准。上面的表数是结果层重写之前的数字,结果层的表数以那份文档为准。
+> **2026-10-07 审阅修订**:`service_current` 改为视图、`service_availability_current` 删除、`ctl.service` 增加 `stopped_sim_ms`;结果层(`slice_result*` 与所有结果表)以 `telemetry-results-model.md` 为准。上面的表数是结果层重写之前的数字,结果层的表数以那份文档为准。第二轮审阅修订(同日):`slice_revision.revision` 改名 `input_rev`;结果层的 `slice_result` 头/体拆分保留为 `slice_state` + `slice_document`。
 
 ## 2. 设计规则(在 `postgres-schema-design.md` 第 1 节基础上增改)
 
@@ -268,7 +268,7 @@ CREATE TABLE stats.slice_result_body (                 -- 大 JSON(trivial run �
   FOREIGN KEY (run_id, snapshot_index) REFERENCES stats.slice_result (run_id, snapshot_index) ON DELETE CASCADE
 );
 
-CREATE TABLE stats.slice_revision (run_id text NOT NULL, snapshot_index int NOT NULL, revision bigint NOT NULL DEFAULT 1,
+CREATE TABLE stats.slice_revision (run_id text NOT NULL, snapshot_index int NOT NULL, input_rev bigint NOT NULL DEFAULT 1,
                                    PRIMARY KEY (run_id, snapshot_index)) WITH (fillfactor = 80);
 CREATE TABLE stats.run_input (run_id text PRIMARY KEY, inconsistency_version bigint NOT NULL DEFAULT 0) WITH (fillfactor = 80);
 ```
@@ -276,8 +276,8 @@ CREATE TABLE stats.run_input (run_id text PRIMARY KEY, inconsistency_version big
 - **为什么拆**(第二轮优化,有证据):`list_slice_index` 的文档说它**每个 slice 事件**(SSE tick、INDEX 投影)都要跑,而它现在读**整个** `result_json`,在 Python 里对它做 SHA-256,再用 `json_each` 展开 `domainResults` 取域列表(`v3_statistics.py:9922-9968`);同时 `status` 在表里有一列、在 JSON 里**又有一份**(`json_extract(result_json,'$.status')`),是两个来源。新设计里 `status` 只在列上(`body` 里不放),`content_hash`、`domain_ids`、两个 pending 标志发布时一次算好,索引类查询只读小行。生成列不再需要(这些值在发布时由应用提取,和 `body` 同一个事务写入)。
 - **一致性**:`slice_result` 与 `slice_result_body` 在同一事务里写;`body` 外键 `ON DELETE CASCADE`。读整体内容时 `JOIN` 两张表。
 - **content key**:`f"{snapshot_index}:{content_hash 的十六进制}:{event_revision}:routing2"`,不再在读路径里现算。
-- 一个 slice 的**输入版本** = `(sum(revision where snapshot_index <= k), run_input.inconsistency_version)`。构建开始读一次,发布时在同一事务里再读一次比较;不相等就丢弃重算。
-- **bump 的时机**:应用层,每个写事务一次,对本事务触碰过的 `snapshot_index` 按升序 `UPSERT revision+1`;`stream_state.inconsistent` 变化时 `run_input.inconsistency_version + 1`。**不再有 `-1` 哨兵行。**
+- 一个 slice 的**输入版本** = `(sum(input_rev where snapshot_index <= k), run_input.inconsistency_version)`。(列名 `input_rev`:与切片文档的内容派生 `content_rev` 区分,见 `telemetry-results-model.md` 第 8 节。)构建开始读一次,发布时在同一事务里再读一次比较;不相等就丢弃重算。
+- **bump 的时机**:应用层,每个写事务一次,对本事务触碰过的 `snapshot_index` 按升序 `UPSERT input_rev+1`;`stream_state.inconsistent` 变化时 `run_input.inconsistency_version + 1`。**不再有 `-1` 哨兵行。**
 - **slice 发布也 bump**自己的 `snapshot_index`(D3):因为 slice k 的结果是 slice k+1… 的输入。契约:"发布 slice k 之后,正在构建的 slice k+1 的发布被判作废并重算"。**这是我对现有隐含行为(触发器让发布自己 bump)的读法,代码里没有注释——如果原作者的意图不同,这里要改**。
 - `content key` 在 Python 里对 `json.dumps(result, sort_keys=True, separators=(',',':'))` 求哈希(`jsonb` 的文本形式不可依赖)。
 
