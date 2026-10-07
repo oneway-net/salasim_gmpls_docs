@@ -743,3 +743,17 @@ G1 的最后三项。**对拍对象一律是生产的 `get_slice`**(独立审计
 
 ### E. 前端(另一个仓库,只删对已删字段的读取)
 `trend-rows.mjs`(两个趋势字段)、`measure-kinds.mjs`(两条声明)、`performance-analytics-dashboard.js:1161-1162`(`unresolvedFaultWindowCount` 的展示)、相应的前端测试。
+
+### 27.1 执行结果(同日)
+
+**已删除**(后端净减约 1250 行,含测试):`_build_service_availability`(690 行)、`_severed_hop_intervals`、`_path_severance_windows`、`_predicted_window_hops`、`_availability_tunnel_events`、`_availability_context`、`_SeveredWindow`/`_PATH_SEVERED`/`_PATH_REJOINED`、`_path_key`、`runtime_store.get_fault_predicted_windows`、`AVAILABILITY_LAST_TRANSITION_SQL` 与它的索引,以及 `_build_slice_result` 里的全部调度(`severed_hops`、`previous_service_ids`、三个故障窗口计数、`paths_at_slice_start`、`pce_confirmed_fault_time` 分支)。**游标表 `service_availability_current`** 的建表/重建检测/索引/触发器登记/写入/清除也一并去掉(`runtime_store` 的"历史遗留的 main 库表"清单里仍保留它的名字,让还留着旧副本的部署继续能把它丢掉)。
+
+**文档里不再有**:`faultWindowIntegration`(两层)、`pathSeveredMs`、`pathSeveredTunnelCount`、`plannedFaultWindowCount`、`predictedFaultWindowCount`、`unresolvedFaultWindowCount`、每条腿的 `pathKey`。`faultTimeBasis` 与 `evidenceSource` 保留为常量。度量注册表删去对应 5 个 code。
+
+**测试**:删 12 个(清单里的 10 个 + 游标回滚一个 + 旧 schema 的游标重建一个)和 `_predicted_window_hops` 的单元测试 1 个;改写 9 个(只去掉游标/已删字段的断言,保留各自真正要验的:发布回滚、构建期间摄入并重验、清除运行时的表覆盖、PCE 确认策略不回溯)。后端 2425 通过;前端 243 通过。
+
+**前端(只删对已删字段的读取)**:`trend-rows.mjs`、`measure-kinds.mjs` 各去掉 `availabilityUnresolvedFaultWindows`/`availabilityPathSeveredTunnels`;`performance-analytics-dashboard.js` 与 `run-performance-summary.jsx` 不再显示"故障窗口缺少确认"的计数,"缺链无故障窗口可解释"的措辞改成"记录路径已不在快照中却仍上报正常";两份语言包的 `availabilityIncompleteNote` 同步。**保留** `availabilityBasisPhysical` 这句和它的分支——历史运行存下来的切片文档里 `faultTimeBasis` 仍可能是 `PHYSICAL_FAULT_WINDOW`,仍需正确显示。
+
+**处理中发现的两件事**:
+1. **重新导出语义时,方法本身的一个假象被暴露**:前端的 `cumulative*` 趋势字段是由逐片字段**累加**出来的,所以在单片文档里扰动一个叶子时它们和逐片字段一起变,让 `serviceAvailability/observationMs` 同时对应 flow 与 stock,结果丢了 `kind`、连带 `availabilityPct` 的加权均值权重没有 `kind`(`test_a_weighted_mean_has_a_weight...` 抓到)。现在把累加出来的字段(`cumulative*`、`tunnelCumulative*`)显式排除在"来源"之外。**这同时纠正了之前一个错的映射**:`serviceAvailability/unavailableMs` 此前被对应到 `cumulativeUnavailableMs`(stock/last),对一个逐片的时长是错的;现在它如实地落在"无法确定"(它只作为比率的输入出现)。第 22.2 节的数字随之更新:有 `kind`/`reduce` 的 **163**(flow/sum 114、stock/last 21、gauge/wmean 19、extremum/max 6、gauge/mean 2、ratio/recompute 1)、仅展示 307、分布 13、无法确定 21;语料也从 1990 份增到 2370 份(新增测试带来),所以与旧数字不能逐项比。
+2. **`uncoveredPathBreakageCount` 的语义残留**:原指"没有故障窗口能解释的断裂",现在没有窗口,它恒等于全部断裂;已改了它的计算与注释,但与 `unreportedPathBreakageCount` 的区别需要另议。
