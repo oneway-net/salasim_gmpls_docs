@@ -278,3 +278,20 @@ OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁
 5. **并发**:同一 (run, pce, stream) 的并发摄入与游标更新——SQLite 的全局串行让它无从测试,Postgres 阶段要**新写**并发契约(这是 4.2 节指出的新风险点)。
 6. **`measurement_sampled_out_count`**:墓碑的"采样计数"只被消费者测试调用,**不在边界里**;契约只验证了它的效果(序号被计入)。
 
+## 16. 契约测试第二批(2026-10-07)
+
+`salasim_gmpls_backend/tests/test_store_contract_lifecycle.py`(9 个),连同第一批共 **43 个**,仍只经 `StatisticsStore` 边界;`World` 增加了 `rows_of_run`(**按 schema 内省**数每张带 `run_id` 的表,所以没人记得登记的新表也会被数到)和 `purge_run`。backend 全量 2310 个通过。
+
+| 钉住的规则 | 说明 |
+|---|---|
+| 序号所有权 | 同一序号被另一个事实占用 → `sequence was reused`,该流 `inconsistent=true`,slice `PARTIAL` 且 `blockers=["STREAM_MISSING_OR_INCONSISTENT"]` |
+| 三个流独立编号 | ledger 序号 1 与 measurement 序号 1 可以同时存在 |
+| 墓碑 | 墓碑占住序号,**别的**事实不能占;**墓碑代表的那条事实**(同一个 `messageId`)仍可以完整到达(采样掉的事实后来补发)——这是现有语义,契约把它写明 |
+| slice 封账顺序 | slice k 在 k-1 之前只能是 `PARTIAL` + `PREVIOUS_SLICE_INCOMPLETE`;k-1 到齐后两者都 `COMPLETE` |
+| 链路证据摘要 | 样例链路的声明摘要是写死的字面量 `29874fdd…9c77`(任何实现都要算出同一个值);链路与声明摘要不符 → 批次 `INVALID`、slice `PARTIAL` + `INVALID_LINK_EVIDENCE` |
+| 清理 run | 清理后**每张**带该 run 的表都为空(含临时 chunk);清理两次无害;清理一个 run 不影响另一个 run |
+
+**这一批发现并修了一个真实 bug**:`runtime_store._PCE_RUN_SCOPED_TABLES`(按 run 清理)和 `_PCE_WIPE_TABLES`(全量清空)**都漏了三张表**——`pce_tunnel_reuse_events`、`pce_idle_connection_reservations`、`pce_rejected_facts`。后果:清理一个 run 之后这三张表里它的行**永远留着**。代码注释还写着"Every pce_state table is keyed by run_id … listed",但并没有列全。`test_purging_a_run_leaves_nothing_of_it_in_any_table` 在修复前失败(我撤掉修复验证过:残留 `pce_rejected_facts`、`pce_tunnel_reuse_events`、`pce_idle_connection_reservations` 各 1 行),修复(两个元组各补三项)后通过。另一个测试 `test_the_scenario_really_puts_a_row_in_every_table_it_can` 保证以后新增的表如果既没被场景填充、又没被列进 `NEVER_POPULATED`(写明理由),会立刻失败——**同一类"漏列"的 bug 以后会被抓到**。
+
+**没有钉住(仍留给 Postgres 阶段新写)**:`slice` 发布使后一个 slice 的在途构建作废(需要并发/注入钩子,顺序测试里看不到)、新设计特有的行为(跨流序号冲突的新判定、同批次链路键唯一、服务状态单一来源)、并发契约 a–e。
+
