@@ -709,3 +709,37 @@ G1 的最后三项。**对拍对象一律是生产的 `get_slice`**(独立审计
 **游标表现在还剩一个读者**:旧的 `_build_service_availability`(故障窗口并入那一支)。它与区间那一支会在**同一个运行的不同切片**里交替出现(`severed_hops` 每片各自判定是否非空),所以区间那一支仍然在写游标行。**删掉故障窗口并入之后,游标表(`service_availability_current`)与 `_availability_tunnel_events`/`_availability_context` 里只为它服务的部分可以一并去掉。**
 
 **没量**:经过 SQLite 的 live 调用耗时(只验证了正确性)。每次调用的代价是"被问服务数 × 它们的事实数"的读取加推导;若服务列表一页很大或事实很多,可以给 live 加一个"自上次读以来事实未变则复用"的小缓存(构建器那套已有,线程安全要另做)。
+
+## 27. 清单:删除物理故障窗口并入(2026-10-07,用户:先列清单,再删)
+
+**前提(已核实)**:新运行**一律**是 PCE 确认策略——`topology_clock_service.py:2147` 与 `routers/deployments.py:1213/1235` 在启动时都把 `businessFaultTimeBasis` 写成 `PCE_CONFIRMED`。旧的故障窗口并入只在运行配置里**没有**这个键时才走到(历史运行与测试)。所以删除不影响任何新运行。
+
+### A. 后端代码(`v3_statistics.py`)——删
+| 符号 | 原因 |
+|---|---|
+| `_build_service_availability`(游标扫描,约 600 行) | 区间那一支已覆盖;它是 `severed_hops` 非空时才走的一支 |
+| `_severed_hop_intervals`、`_path_severance_windows`、`_SeveredWindow`、`_PATH_SEVERED`、`_PATH_REJOINED` | 只服务于故障窗口并入 |
+| `_availability_tunnel_events`、`_availability_context`、`AVAILABILITY_LAST_TRANSITION_SQL`(及 `pce_state_schema.py` 里对应的索引) | 只被旧扫描读(实时投影已改用区间) |
+| `_build_slice_result` 里的调度:`severed_hops`/`planned/predicted/unresolved_fault_windows`/`paths_at_slice_start`/`previous_service_ids`/`pce_confirmed_fault_time` 分支、`get_fault_schedule`/`get_fault_predicted_windows` 的这一处读取 | 同上 |
+| **游标表 `service_availability_current`**:区间那一支的写入、`_SliceWrites.availability`、`_drop_slices_from_locked` 里的删除、`pce_state_schema.py` 的建表、`runtime_store.py` 三处清单里的表名 | 最后一个读者(旧扫描)没了,写入是死代码 |
+| `runtime_store.get_fault_predicted_windows` | 唯一调用方是被删的那段 |
+
+### B. 保留(容易误删的)
+- `get_fault_availability_plan`、`businessFaultTimeBasis`、`_delivered_fault_interval`、`_fault_delivery_instant`、`_merge_intervals`、`get_fault_schedule` 的其余调用:**物理链路可用性**(`physicalLinkAvailability`)和**故障统计**用,与业务可用性无关。
+- `uncoveredPathBreakageCount`、`unreportedPathBreakageCount`:是"路径在快照里断了、隧道却仍报告正常"的**证据诊断**,不依赖故障窗口。注意:`uncovered` 原本指"没有故障窗口能解释的断裂",没有窗口之后它**恒等于全部断裂**——语义残留,留待另议。
+
+### C. 文档字段(`serviceAvailability` / `tunnelAvailability`)
+| 字段 | 处理 | 谁在读 |
+|---|---|---|
+| `faultWindowIntegration`(两层)、`pathSeveredMs`、`pathSeveredTunnelCount`、`plannedFaultWindowCount`、`predictedFaultWindowCount`、`unresolvedFaultWindowCount` | **删** | 前端 `trend-rows.mjs`(`availabilityPathSeveredTunnels`、`availabilityUnresolvedFaultWindows`)、`measure-kinds.mjs` 对应声明、`performance-analytics-dashboard.js:1162`(`unresolvedFaultWindowCount`) |
+| `faultTimeBasis`、`evidenceSource` | **留,恒为 `PCE_CONFIRMED` / `pce-confirmed-state-transitions`** | 前端 `trend-rows.mjs:497`(`faultTimeBasis`) |
+| `evidenceComplete`、`runtimeRegistryEvidence`、`stateModel`、`clockPolicy` | 留 | 审计脚本、前端 |
+| 度量注册表里这几个 code | 删,并重新导出语义 | — |
+
+### D. 测试
+- **删(编码被去掉的行为)**:`test_service_availability_counts_a_cut_link_the_control_plane_never_reported`、`..._counts_a_sun_outage_with_no_injection_at_all`、`..._ignores_a_sun_outage_from_another_slice`、`..._integrates_the_simulated_time_the_fault_really_hit`、`..._falls_back_to_the_recorded_delivery_time`、`..._ends_a_severed_window_when_the_reroute_lands`、`..._reports_a_fault_whose_activation_never_resolved`、`..._ignores_a_fault_on_a_hop_no_tunnel_uses`(8 个);`test_future_fault_not_yet_due_does_not_reduce_current_evidence_coverage`、`test_horizon_unconfirmed_fault_does_not_become_evidence_of_uptime`(2 个,需先看是否还有别的意图)。
+- **改**:`test_pce_confirmed_policy_does_not_backdate_business_outage_to_sun_plan`(去掉已删字段的断言,保留"不回溯"的本意);六个涉及游标表的测试(`test_dropping_a_slice_rolls_the_availability_cursor_back_with_it`、`test_availability_cursor_rebuilds_when_its_shape_is_out_of_date`、`test_boundary_audit_does_not_call_cross_slice_transition_lost`、`test_live_service_availability_ignores_main_schema_duplicates`、`test_slice_build_allows_ingestion_and_revalidates_inputs`、`test_slice_publish_rolls_back_result_and_all_derived_rows_together`):去掉游标行断言,保留它们真正要验的(回滚、重建、重复事实)。
+- **不动**:`tests/test_fault_statistics.py`、`test_random_link_faults.py`、`test_runtime_store_batch_write.py`、`test_fixed_fault_plan.py`、`test_simulation_control_start.py`(物理可用性与故障计划,保留项)。
+
+### E. 前端(另一个仓库,只删对已删字段的读取)
+`trend-rows.mjs`(两个趋势字段)、`measure-kinds.mjs`(两条声明)、`performance-analytics-dashboard.js:1161-1162`(`unresolvedFaultWindowCount` 的展示)、相应的前端测试。
