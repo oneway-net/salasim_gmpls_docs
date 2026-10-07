@@ -321,6 +321,8 @@ salasim_sim/            仿真模块
 | **P6 sim 模块** | 回放器、编译器、节点编排、结果与保真度;Backend 包拆分完成 | 确定性回归 + 保真度检验进入夜间 |
 | **P7 线上清理** | 删 TLV 65510 系列、通知类型 33、旧 RPC | F4/F9 基线归零 |
 
+> **P1 实施状态(2026-10-08,本地,未推送)**:① `PceContext`(`net.salasim.pce.app`)取代 `SimRegistry` 中的状态服务(账本、链路身份、TED、占用库、合并缓存),构造注入;`SimRegistry` 只剩运行机制(run、时钟线程、帧源、预计算 worker、运行配置),随 P2/P6 删除。`PendingUpdateTracker`/`TunnelUpdateEmitter`(进程级单例)由 `DomainPCEServer` 绑定,`LinkIdentityResolver` 由上下文发布注册表——三者随 P2/P3 的链路身份与事实发射重写时消除。② 包级重组:27 个 model/recovery/plan 类移入 `net.salasim.pce.*`;`signaling`、`facts`、`mgmt` 的目标包尚未建立(其类仍在 `es.tid.pce.*` 旧包,无仿真依赖,按需随后续阶段移动)。③ 重启恢复:S 标志默认开;无状态的 PCE 不发 LSP-DB-VERSION,PCC 必须全量同步;同步期间全局拦截新建;无结束标记 120 s 过期重连。**未验证**:没有端到端重启测试(沙箱不能绑定本地端口),需要在可开端口的机器上用 Emulator + PCE 实测。
+
 与 `architecture-evolution-design.md` 的关系:W1(Java 25)、W2(锁与并发,与 P1/P2 合并)、W4(JetStream/Postgres,与 P3 合并)继续有效;W3、W5、W6 中与本文冲突的部分已在该文头部标注取代。
 
 ## 6. 待决项与风险
