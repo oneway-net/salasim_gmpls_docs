@@ -22,11 +22,19 @@
 └───────────────┬──────────────────────────────────────────────────────────────┘
                 │ 南向接口(NETCONF · PCEP · RSVP-TE · OSPF-TE),对真假设备一致
 ┌───────────────▼──────────────────────────────────────────────────────────────┐
-│ 设备层 (network) —— 真实设备  或  仿真模块提供的 Emulator 节点                  │
+│ 设备层 (network) —— 真实设备  或  Emulator 节点(行为与真实设备一致,不感知仿真) │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**依赖规则**:平台 → 核心 → 设备,单向。核心的表、函数、视图和 API 只允许引用 `iam.org`(这个网络归谁),**不得引用平台的其他部分,尤其是 `sim.*`**;核心 API 中不得出现仿真参数。仿真模块与平台其他部分一样,单向引用核心。
+**依赖规则(用户,2026-10-07:设备层和管控层都不感知仿真的内容)**:
+1. 设备层和管控核心的**代码、数据、接口里不出现仿真概念**:没有仿真时钟、帧、加速比、种子、故障计划,没有 `sim.*` 引用,没有 `/sim/*` 接口,事实里没有仿真时间字段。唯一允许的平台引用是核心的 `iam.org`(网络归谁)。
+2. 仿真模块只用"真实世界里的运营者和环境"能用的手段影响它们:
+   - **NETCONF 改设备配置**:故障 = 接口 `enabled=false`;链路时延/带宽 = 接口或链路属性;真实设备同样可以这样被操作。
+   - **向控制器下发接触计划**(预测的拓扑变化计划,如由轨道预测得到)——这是真实卫星网络的功能,属于核心,不算仿真。
+   - **K8s 起停节点**。
+   - **只读**核心的历史事实与视图。
+3. 设备跑**真实时间**,协议定时器不缩放。"加速"只是仿真模块更快地**回放环境变化**(推进接触计划与故障计划)。加速时控制面真实时延相对拓扑变化周期变大,结果必须记录这个比值。
+4. 仿真时间只存在于 `sim`:`sim.clock_segment`(名义,用于计划)与 `sim.clock_sample`(仿真模块自己回放环境时记录的 `(墙钟, 仿真时间)`,用于还原)。核心事实只有 UTC。
 
 **判定规则(评审时逐表过一遍)**:把一张表的名字和列拿到真实设备组成的网络里,还说得通吗?说不通就放进 `sim`。
 `sim_ms`、`speedup`、`frame`、`slice`、`seed`、`fault plan` 在真实网络里不存在 → `sim`。`link`、`LSP`、`PCEP session`、`alarm`、`config transaction` 在真实网络里都存在 → 核心。
@@ -75,8 +83,8 @@
 
 1. **分段线性时钟** `sim.clock_segment(session_id, seq, wall_from, wall_to, sim_from, speedup, cause)`:操作员的 Start / Pause / Resume / 改加速比各追加一段;暂停是 `speedup = 0`;`sim(t) = sim_from + (t − wall_from) × speedup`;同一 session 的段在墙钟上用排他约束保证不重叠。仿真换 UTC 时,暂停段上取暂停开始的那一刻。
 2. **实测采样** `sim.clock_sample(session_id, wall_at, sim_ms, observer)`:名义速率只用于**计划**(把故障计划的仿真时刻换成预期 UTC);**还原**事实发生时的仿真时间,用相邻采样点线性插值。计划与实际的差 = 控制面反应时延。
-3. **事实自带的时钟对**:调研结果(PCE 仓库,2026-10-07)—— PCE 的事实已经同时带 `occurredAt`(墙钟,ISO-8601 Instant)和 `simulationTimeMs`(仿真时钟):`TunnelUpdateEmitter`(4 处)、`FaultImpactEmitter`、`PceWebhookSender.stampV3`(`putIfAbsent`,兜底盖戳)。所以**每条事实本身就是一个时钟采样点**(`occurredAt`, `simulationTimeMs`),ingest 可以直接据此写 `sim.clock_sample`,不需要 PCE 额外上报。
-4. **PCE 侧需要改的只有一致性**:`occurredAt` 的含义必须统一为"事实在观察者处发生的时刻"。现状各发射点取法不一:有的是创建时 `Instant.now()`(`ProtectionGroupRegistry`、`CrossSnapshotWindowEmitter`、`TunnelUpdateEmitter:128`),有的是完成时刻(`TunnelUpdateEmitter:430`、`FaultImpactEmitter` 用 `confirmedWallMs`),带宽快照用冻结时刻(`LinkBandwidthSnapshotEmitter`)。需逐个核对并写进载荷契约;`stampV3` 的兜底盖戳是入队时刻,晚于事实发生,只能当上界。
+3. **采样点由仿真模块自己产生**:仿真模块回放环境(应用一帧/一次故障)时,同时知道墙钟与仿真时间,每次记一条 `sim.clock_sample`。核心事实**不带**仿真时间。(此前设想"从事实自带的 `(occurredAt, simulationTimeMs)` 导出采样点"已作废。)
+4. **PCE 侧需要改的**:① 事实里去掉 `simulationTimeMs`;② `occurredAt` 的含义统一为"事实在观察者处发生的时刻"。现状各发射点取法不一:有的创建时 `Instant.now()`(`ProtectionGroupRegistry`、`CrossSnapshotWindowEmitter`、`TunnelUpdateEmitter:128`),有的完成时刻(`TunnelUpdateEmitter:430`、`FaultImpactEmitter` 用 `confirmedWallMs`),带宽快照用冻结时刻(`LinkBandwidthSnapshotEmitter`)。`stampV3` 的兜底盖戳是入队时刻,晚于事实发生,只能当上界。
 5. **Emulator**:它不直接向 Backend 发遥测;其事实经 PCEP 报告(PCRpt)到达 PCE,PCE 盖的是**接收时刻**,不是节点的时刻。节点自己的时间戳应走 NETCONF 通知的 `eventTime`(RFC 5277,标准字段,与已定的"故障经 NETCONF 通知"一致),观察者记为 `agent:`;不为此扩展 PCEP。节点时钟与 PCE 用 chrony 同步。在节点代理就绪前,Emulator 相关事实以 PCE 接收时刻为 `occurred_at` 的近似,并在 `observer`/`attrs` 里标明 `time_source=pce_received`。
 6. **入库字段**:核心事实表 `occurred_at`(观察者墙钟)、`received_at`(控制器入库时刻)、`time_source`(`observer` | `pce_received` | `ingest`);查询时用事件 × 时钟分段的视图补出 `sim_ms`。
 
@@ -134,6 +142,23 @@
 - **新增**:`core.network`、`sim` 模块各表(会话、时钟分段/采样、故障计划、节点编排、窗口与结果)、告警生命周期。
 - 已有的 `platform.sql` 基本不动;`smoke.sql` 需随键与时间轴重写;`pg-mutate` 的 28 个变异需随之更新,仍要求全部被抓到。
 
+## 7b. 现有代码中的仿真感知点(需清理,每项单独确认后才动)
+
+只列已见到的,**不是全量**;清理前需做全量盘点。
+
+| 位置 | 感知点 | 方向 |
+|---|---|---|
+| PCE `sim/ManualSimulationClock`、`ClockAnchor`、`AutonomousClockThread` | 仿真时钟驱动帧切换与故障生效 | 改为按**接触计划**在墙钟时刻生效;仿真时钟移到 `sim` 的回放器 |
+| PCE `SimFramesHandler`、`FrameIngestion`、`FrameSchedule`、`ScheduleFrame` | 帧作为仿真概念 | 中性化为"接触计划/拓扑时间表"(核心功能) |
+| PCE `SimulationFaultRegistry`、`FaultExecutionQueue` | 仿真故障注册表 | 故障经 NETCONF 到设备,核心只响应链路/接口状态变化(已定的故障通知模型) |
+| PCE 事实里的 `simulationTimeMs` | 事实带仿真时间 | 删除 |
+| PCE `/sim/*` 接口、`SALASIM_FRAME`(PCEP) | 仿真控制走核心接口 | 移出(架构演进计划 W7 已有) |
+| PCE/事实里的 `runId`、run 栅栏、`resultScope=SLICE` | run/slice 是仿真语汇 | 核心改为 `network_id` + epoch |
+| Emulator `node/mgmt/NodeSimClock` | 节点内的仿真时钟/加速 | 节点按真实时间运行,删除时间缩放 |
+| Backend `topology_clock_service` 等 | 后端按 tick 推帧 | 移入 `sim` 回放器,经标准接口驱动 |
+
+**含义**:现有"加速比 > 1"的运行方式不再由设备实现;需决定是否接受"设备实时、环境加速回放"(见 §8-7)。
+
 ## 8. 待决定(附建议)
 
 1. **分区**:按事件时间范围(建议),还是按 `network_id`?时间分区适合长期网络,代价是清理短命网络要靠"导出后按时间段清"。
@@ -142,6 +167,7 @@
 4. **告警来源**:核心定义告警模型;来源先由 PCE/控制器依据链路与 LSP 的 down 事件上报(`observer=controller:`),等节点代理就绪后改由 `agent:` 上报。事件格式不变。
 5. **网络与会话的关系**:建议一个被管网络可以有多个仿真会话(先后),核心数据不随会话切换而断开。
 6. **操作员确认(ack)**:作为 `fm` 告警的一类事件,不单独建表。
+7. **加速方式**:设备实时运行,仿真只加速回放环境变化(建议;与 OSPF 开启时 speedup=1 的既有决定一致)。代价:协议级时序不随加速缩放,控制面时延与拓扑变化周期的比值要写进结果。若要求设备内部也加速,就必然让设备感知仿真,违反本原则。
 
 ## 9. 实施顺序(每步单独确认)
 
