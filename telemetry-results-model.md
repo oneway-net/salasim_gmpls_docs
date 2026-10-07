@@ -350,7 +350,7 @@ CREATE TABLE stats.slice_document (          -- 内容:只追加/整行替换,�
 | `slice_document` | 100 × 1 全局 + 被读过的域 | 全局 ~118 KB × 100 ≈ **12 MB**;域文档按需 |
 | 合计 | | **约 330–400 MB / run**(旧版 150–250 MB;对照:现在一个切片 118 KB × 100 ≈ 12 MB 的 JSON + 事实) |
 
-- **`measure` 占大头,且几乎全部来自域作用域**(273 × 22)。如果真实数据证实这一点,优先的缓解是第 10 节 G3 的两条:只为 UI 实际可选的域存每域标量,或把低价值指标降为只存全局。不预先做。
+- **`measure` 占大头,且几乎全部来自域作用域**(273 × 22)。如果真实数据证实这一点,优先的缓解是第 10 节 G3 的两条:只为 UI 实际可选的域存每域标量,或把低价值指标降为只存全局。不预先做。另一条是已结束 run 的**压实**(第 20 节),它不丢任何数据。
 - **校正方法(不需要 Postgres,在用户本机跑)**:真实 run 的 `pce_state.sqlite3` 里已经存着每个切片完整的 JSON(`simulation_slice_results.result`)。在 `tools/measure-run-volume.py` 里对每份文档调用 `slice_decomposition.decompose`,直接得到**真实 22 个域下每切片的 `measure` 行数**和维度取值分布,替换上表的 1.84 假设;`byService`/`byTunnel`/`diagnosticLinks` 的长度给出 `entity_slice`/`link_diag` 的真实行数。
 
 **这比现状大一个数量级**——换来的是可查询、可分页、可跨 run 聚合、可局部重建。**是否值得,取决于你要不要跨 run 分析和服务端分页**(第 12 节问题 1)。体量假设用 `tools/measure-run-volume.py` 在真实 run 上校正(**还需要把 `measure`/`entity_slice` 的估算加进工具**:切片数、PCE 数、服务数、隧道数)。
@@ -511,4 +511,60 @@ CREATE TABLE stats.slice_document (          -- 内容:只追加/整行替换,�
 | D-17 | **双向服务的可用性**(G1 待办里"先问用户"的一项) | **需要,按方向分别计算**,对拍目标是生产 `get_slice` 现在的行为 | 双向服务是已上线的功能(有向图 + 双向业务的修复已测试);`entity_interval`/`entity_slice` 已有 `direction` 列;G1 不留退路,生产有的输出新模型就必须有。服务级汇总怎么合并两个方向**以生产的现有规则为准**,先读代码、不新定义 | — |
 | D-18 | **生产 slice-0 墙钟投影缺陷**(G1 第三阶段发现) | **不修旧代码** | 它出在 `wall_to_sim` 投影,新模型已不要 WALL 基准、只读 `stopped_sim_ms`;旧构建器整体被替换,修它是给即将删除的代码投入。对拍时该场景按"声明的差异"处理 | 新模型上线前需要旧系统继续出正式结果 |
 | D-19 | **`slice_decomposition.py` 的第三维折叠** | **改为报错**(本文第 6.1 节的硬规则落到代码) | 语料里没有三维指标,改了不影响任何现有结果;留着折叠会让未来的三维映射悄悄进 `dim_b` | — |
+
+## 20. 要不要用 TimescaleDB,以及原生替代:已结束 run 的压实(2026-10-07)
+
+**结论**:现阶段**不需要** TimescaleDB,维持普通 Postgres + 按 run 分区(与用户 2026-10-07 的决定一致)。它对本模型唯一实质的收益是**已结束 run 的列式压缩**,这一点用原生的"压实"(本节后半)能拿到大部分;**是否需要,由第 11 节的体量测量决定**。
+
+### 20.1 逐项评估
+
+| Timescale 能力 | 对本模型的价值 | 原因 |
+|---|---|---|
+| 连续聚合 | **无** | 切片结果本身就是聚合,且带迟到事实重开、输入版本校验(`slice_revision`)、跨约 20 张表装配文档这些语义;连续聚合是"按时间窗刷新单个查询",表达不了。D-14 已把封账交给异步构建者 |
+| hypertable 自动分区 | **反而不合适** | 主维度是 run 而不是时间:查询全是"run 的第 k 个切片",清理是"整个 run 一起删"。hypertable 按时间列切 chunk,与 `run_id` 的 LIST 分区冲突,删一个 run 变成跨 chunk 的删除,而不是丢弃分区 |
+| `time_bucket` / 超函数 | **几乎无** | 分桶就是 `GROUP BY slice_index / n`;可合并的百分位已由 `dist.hist` + 固定边界解决(toolkit 的 tdigest/uddsketch 能替代,但又是一个扩展依赖) |
+| 摄入吞吐 | **无** | R36-C03 的根因是 SQLite 每条事实一次 fsync + 全局单写者;Postgres 的批量事务/COPY + 按流咨询锁已解决,Timescale 在这一层没有额外收益 |
+| 列式压缩 | **有,唯一实质收益** | 第 11 节修订后约 330–400 MB/run(`measure` 约 220 MB);run 结束后数据不再变,正适合压缩,通常能压到 1/10 左右 |
+
+### 20.2 引入的代价
+
+- **托管云受限**:商用定位是 SaaS(`commercial-architecture.md`)。主流托管 Postgres(AWS RDS/Aurora、Google Cloud SQL)不提供 Timescale,只能自建或用 Timescale 自家云,部署选择被锁定。**(按 2026 年中的了解,采用前需重新核实。)**
+- **许可证**:压缩与连续聚合属于 Timescale License(TSL),不是 Apache 部分;TSL 允许在自己的 SaaS 应用里使用,但禁止作为数据库服务对外提供。**商用前需法务确认。**
+- **运维**:扩展版本与 PG 大版本绑定升级;建库脚本、测试环境、用户本机都要装这个扩展。
+
+### 20.3 原生替代:已结束 run 的压实
+
+run 进入终态且**不再接受迟到事实**后,在一个事务里把它的 `measure` 改写成**每个 `(run, scope, metric_id, dim_a, dim_b)` 一行、按切片下标排列的数组**,并丢弃该 run 的 `measure` 分区:
+
+```sql
+CREATE TABLE stats.measure_archived (
+  run_id text NOT NULL, scope text NOT NULL,
+  metric_id smallint NOT NULL REFERENCES stats.metric_def,
+  dim_a text NOT NULL DEFAULT '', dim_b text NOT NULL DEFAULT '',
+  slice_values double precision[] NOT NULL,      -- 下标 = slice_index + 1;该切片无此行 = NULL 元素
+  PRIMARY KEY (run_id, scope, metric_id, dim_a, dim_b)
+);                                                -- 普通表(每 run 约 1.2 万行);数组超过 TOAST 阈值时按 lz4 压缩
+
+-- 压实(单事务,run 已终态):
+INSERT INTO stats.measure_archived
+SELECT run_id, scope, metric_id, dim_a, dim_b,
+       array_agg(value ORDER BY slice_index)      -- 构建器补齐缺失切片为 NULL,保证下标对齐
+FROM stats.measure WHERE run_id = $1
+GROUP BY run_id, scope, metric_id, dim_a, dim_b;
+-- 然后在同一事务里 DROP 该 run 的 measure 分区(锁序与 drop_run 相同)
+```
+
+- **体量**:约 118 万行 → 约 1.2 万行(约 100×)。每行的行头与重复的键(`run_id`、`scope`、维度)只存一次,数组再被 TOAST 压缩;**预计与列式压缩同一量级(推断,未测)**。`entity_slice`(25 万行/run)可按同样方式压实成每实体一行的数组,`link_diag` 同理;是否做同样由测量决定。
+- **读路径**:
+  - "某指标随切片的序列"(UI 主读法)= 读一行,比压实前更快;
+  - "某切片的全部指标" = `SELECT …, slice_values[k+1] FROM stats.measure_archived WHERE run_id=$1`,扫该 run 约 1.2 万行,可接受;
+  - `run_measure` 在 run 终结时已算好,不受影响;已结束 run 的 `slice_document` 缓存不必重装配(内容不变)。
+- **代价**:读 `measure` 的代码多一个分支——进行中的 run 读 `measure`,已结束的读 `measure_archived`(封装在 store 边界里,UI 与 API 无感)。"终态"必须是**不可再开**的状态:压实之后若还允许迟到事实,就要"解压 → 重算 → 再压实",那就不值得做。
+- **触发**:run 进入终态后由构建者异步执行,带 `lock_timeout`(与 O9 的 `drop_run` 一致);失败可重试(幂等:先删该 run 的 `measure_archived` 行再插)。
+
+### 20.4 决策路径
+
+1. **现在**:普通 Postgres,不做压实(不预先优化)。
+2. **体量测量后**:实测每 run 大小 × 计划保留的 run 数(例:1000 run × 400 MB ≈ 400 GB)对照存储预算;在预算内 → 什么都不做;超出 → 先做 20.3 的压实。
+3. **压实后仍超出,或出现"跨大量 run 的分析扫描"需求时**,再评估 Timescale 或其它列式方案(例如冷 run 导出 Parquet),届时一并核实 20.2 的托管云与许可证前提。
 
