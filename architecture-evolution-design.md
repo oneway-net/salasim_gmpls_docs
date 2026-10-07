@@ -58,7 +58,7 @@
    │ NETCONF（Call Home RFC 8071 + TLS RFC 7589）         │ JetStream（高频事实，载荷由 YANG 定义）
 Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──PCEP── Emulator（PCC + FRR）
                                     ▲ OSPF-TE 泛洪（FRR OSPF API）      └ RSVP-TE
-存储：Postgres/Timescale（取代 telemetry、pce_state 等多个 SQLite 文件）
+存储：Postgres（按 run 分区；取代 telemetry、pce_state 等多个 SQLite 文件）
 ```
 
 ## 4. 工作流
@@ -112,8 +112,8 @@ Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──P
 | 层 | 方案 | 删除的代码 |
 |---|---|---|
 | 传输 | NATS JetStream（jnats 客户端）。subject 为 `run.<id>.pce.<id>.{ledger,measurement}`，异步 publish，用 `Nats-Msg-Id` 去重，收到 PubAck 后释放 | `TelemetryOutbox`、`PceWebhookSender` 的三个队列和重试、Backend 的 payload 哈希去重 |
-| 入库 | 拉取型 consumer 只追加原始事实（Postgres COPY），写完即 ack | 单写者 RLock、`_record_sequences_locked`（游标改用 consumer 的 ack floor） |
-| 投影 | 每种投影一个独立的 durable consumer；切片统计用 Timescale 连续聚合 | `_flush_current_projections_locked` 这类同步刷新 |
+| 入库 | 拉取型 consumer 按批写入：原始事实 + `fact_index` + 受影响实体的 `entity_interval`（常见情形是对单个实体追加一行）+ `slice_revision`，**同一事务**提交后即 ack（2026-10-07 修订：区间是 `service_state_v` 的唯一来源，必须与事实同事务，见 `telemetry-results-model.md` 第 19 节） | 单写者 RLock、`_record_sequences_locked`（游标改用 consumer 的 ack floor） |
+| 投影 | 切片封账（`measure`/`dist`/`entity_slice`/… + 文档）与 L3 运行结果由**独立的异步构建者**完成，不在 ack 路径上；输入版本用 `slice_revision` 校验（2026-10-07 修订：不用 Timescale，用户已定普通 Postgres） | `_flush_current_projections_locked` 这类同步刷新 |
 | 背压 | ledger 不丢，留在流中等 Backend 追上，seal 时等 consumer 追平；measurement 溢出时采样丢弃，并把 run 标为"遥测降级"。**时钟不暂停** | 时钟暂停逻辑 |
 | 序列化 | 只序列化一次，用 Jackson，载荷由 YANG 定义（RFC 7951） | parse 往返 |
 | 观测 | OTel trace context 放进消息头，记录端到端时延直方图 | — |
@@ -209,7 +209,7 @@ Parent PCE ──PCEP(H-PCE)── Domain PCE（ACTN 中的 PNC 角色）──P
 | **虚拟线程 + 统一执行器**（新增） | PCE 里散落的 31 个 `ThreadPoolExecutor` 和 34 处 `new Thread(`。阻塞型任务统一走虚拟线程执行器；CPU 密集的算路、时钟线程各留一个命名的平台线程池。线程池的数量和职责写进一张清单 | W1-C / W2 | 与 W2-S2 一起做 |
 | LMAX Disruptor（必要时） | `runBoundaryLock` 全局锁 | W2-S2 | 优先复用已有的 owner-FIFO 分片 |
 | NATS JetStream（jnats） | `TelemetryOutbox`、webhook 的三个队列、自研重试 | W4 | — |
-| Postgres + TimescaleDB | runtime/telemetry/pce_state/operations 四个 SQLite 文件；`db_settings.py` 里针对 "database is locked" 的重试（**新增**，会随之删除） | W4 | — |
+| Postgres（不用 TimescaleDB，2026-10-07 用户决定） | runtime/telemetry/pce_state/operations 四个 SQLite 文件；`db_settings.py` 里针对 "database is locked" 的重试（**新增**，会随之删除） | W4 | — |
 | lighty.io（ODL MD-SAL、RESTCONF、NETCONF） | Backend 的 REST 路由、`agent_clients.py`、`PceApiServer`（com.sun HttpServer）、`EmulatorApiServer`。首轮建议的 Javalin **不再采用**，由 lighty 取代 | W6 | N0–N4 |
 | Temporal（Java SDK） | `topology_clock_service.py` 里手写的 run 生命周期状态机 | W6-N5 | — |
 | FRRouting（ospfd，OSPF-TE） | emulator `transport/ospf/*`、两份 `tedb/ospfv2/*` | W5 | — |
@@ -243,7 +243,7 @@ W1-A（Java 25 运行时）──┬─> W6-N0（YANG、lighty 验证）──> 
                         └─> W1-B ──> W1-C
 W2-S1 ──> W2-S2 ──> W2-S5（不依赖新基础设施，可以最先开始）
 W3（删除时钟暂停）依赖 W4 的 JetStream 能吸收积压；时间表预下发要在 W5 之前完成
-W4：JetStream ──> Postgres/Timescale ──> 投影 consumer
+W4：JetStream ──> Postgres ──> 异步切片构建者
 ```
 
 优先级：
