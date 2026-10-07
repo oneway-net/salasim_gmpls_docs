@@ -393,11 +393,33 @@ CREATE TABLE stats.slice_document (
 - 生产的"累计"靠上一个切片的 `cumulative` 接力,区间模型的累计是**前缀和**;300 个历史里两者逐字段相等,说明**接力在这个契约内没有引入任何前缀和算不出来的东西**。接力里有的东西还没覆盖:`complete`/`fromSnapshotIndex`("证据不完整就停止累计"的标志),见下。
 
 **还没做(下一阶段,每项同样的两边对拍)**:
-1. **服务退役**(`stopped_at` 投影到 sim 轴、`retired`、`stateAtBoundary='STOPPED'`)和 `lifetime`。
-2. **两个时间基准**(`WALL` 与 `SIM`)与墙钟投影——**建议问**:新 run 是否还需要 `WALL` 基准?如果只保留 `SIM`,同样可以整体拿掉。
+1. ~~**服务退役**~~ —— **已做,见第 16 节**(`lifetime` 自动退役的触发不在可用性里,见第 16 节)。
+2. ~~**两个时间基准**~~ —— **已决定不要(2026-10-07,用户)**:新模型只有 `SIM` 基准;`entity_interval.basis` 列**删除**(第 5 节的 DDL 里的 `basis text CHECK ('SIM','WALL')` 及主键里的 `basis` 不再需要),墙钟投影(`wall_to_sim`、`plan_to_sim`)不进新模型。
 3. **多方向、共享隧道**(审计明确不支持,生产的 `interval_service_health` 支持多方向)。
 4. 隧道层的 **`pathSwitches`**(ERO 路径键变化,需要 `pathUpdate` 的 hop 序列)。
 5. **累计的 `complete` 标志**(第一个证据不全的切片处永久停止累计)与"新注册服务不算不完整"的规则;这是接力里唯一带**状态**的东西,区间模型要么用"证据不完整"区间属性取代(`entity_interval.evidence_complete`),要么用前缀的 `bool_and`。
 6. 每切片的**聚合**(`commissionedServices`、`degradedAtBoundary`、`switchedServices`、`maxPathSwitches`、`stateAtBoundary` 等)——它们是区间/事件的汇总,不是新语义,但要对拍。
 7. **迟到事实重开切片**(`updatePending`)下区间的局部重放。
+
+## 16. G1 第三阶段结果:服务退役(2026-10-07)
+
+**决定**:`WALL` 时间基准**不要了**(用户)。区间模型只有 `SIM` 基准;`entity_interval` 去掉 `basis` 列。
+
+**做了什么**:`derive_service(..., stopped_ms)`:服务及其隧道的观测在 `stopped_ms` 处结束;**恰好在停止时刻的事实仍算**(事件被计入、不产生时长),**之后的事实不属于这个服务的历史**;每个切片边界上的 `commissioned`/`retired`/`stateAtBoundary`(`'STOPPED'` 等)由一条按事件记录的"轨迹"回答(`Timeline.at_boundary`、`tunnel_at_boundary`),也**不携带任何切片间状态**。
+
+**对拍**(生产的 `get_slice`,在原有字段之上再加 `commissioned`、`retired`、`stateAtBoundary`,服务与隧道两层):12 种子 × 25 = **300 个随机历史,其中 100 个在某个切片里退役了服务**(100 个出现 `STOPPED`、100 个出现隧道 `retired`),**全部相等**。另有一个手写用例:**失败恰好发生在停止时刻**(计为服务的一次中断事件、不占时间)与**晚一毫秒**(服务已不存在,不计)。**突变检查**(忽略停止、事实在停止时刻被排除、`retired` 判定 `<=`→`<`、隧道不随服务退役)**全部被抓到**。
+
+**设计点(对表结构有影响)**:区间模型的输入是**以模拟时钟记录的停止时刻** `stopped_ms`,所以 **`ctl.service` 要增加 `stopped_sim_ms bigint`**(控制面在停止服务的那一刻就知道 sim 时间:从时钟锚点换算),`stopped_at timestamptz` 保留给展示/审计,**不再参与可用性计算**。生产是把墙钟的 `stopped_at` 在**每个切片里用这个切片自己测得的边界**投影到 sim 轴(`wall_to_sim`)。
+
+**实验(不是回归测试;用于说明为什么要改)**:同一历史、同一个停止时刻(墙钟 +15 s),只改切片的墙钟边界,看生产发布的 `observationMs`:
+
+| 墙钟与 sim 的关系 | 切片 0 | 切片 1 | 切片 2 | 说明 |
+|---|---|---|---|---|
+| 一致(墙钟 = sim) | 9000 | **5000** | 0 | 与区间模型一致 |
+| 墙钟边界带 ±3% 抖动(10.4、19.7、30.9 s) | 9000 | **4946** | 0 | **停止时刻随测量抖动漂了 54 ms**:同一个事实,输出取决于边界怎么量 |
+| 墙钟比 sim 慢一倍(20、40、60 s) | **4000** | 0 | 0 | 停止落在切片 0:切片 0 没有更早的边界,生产用**名义切片长度(sim 的 10 s)**当墙钟起点,算出 sim=5000 ms,**正确值是 7500 ms**(应观测 6500 ms,发布了 4000 ms,少了 2500 ms) |
+
+**第三行是现有实现里一个真实的缺陷**:当 sim 与墙钟不同步(speedup ≠ 1)时,**在切片 0 内退役的服务**,可用性观测时长会算错(上例差 2500 ms)。注释自己写着 "Slice 0 has no earlier frozen boundary; the nominal slice length is the only anchor available, and the clocks have not yet had a slice to drift"——这个假设在 speedup ≠ 1 时不成立。第 2 行说明即使 speedup = 1,停止时刻也**不是事实,而是测量抖动的函数**。两者都被"在控制面直接记录 sim 时间"的设计消除。**我没有改现有生产代码**(它即将被取代);如果你想先修,是几行的改动,告诉我。
+
+**还没做**(第 15 节的 3–7 项):多方向与共享隧道、隧道层 `pathSwitches`、累计的 `complete` 标志、每切片聚合字段、迟到事实下的局部重放。另外:`lifetime`(服务到期自动退役)的**触发**在控制面(`expires_sim_time`、`expiry_attempt_snapshot`、`teardown_requested_at`),产出的就是一个 `stopped_sim_ms`——**可用性模型只消费这个时刻**,所以退役在这里已经完整;触发逻辑属于 `ctl`,不在结果层。
 
