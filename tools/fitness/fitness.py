@@ -224,7 +224,7 @@ def check_f3() -> list[Violation]:
 
 F7_CALLS = re.compile(r"\b(System\.currentTimeMillis\(\)|Instant\.now\(\)|(?:LocalDateTime|OffsetDateTime|"
                       r"ZonedDateTime|LocalDate|LocalTime)\.now\(\)|new\s+Date\(\))")
-F7_ALLOWED_FILES = set()  # the clock adapters, once they exist (P1)
+F7_ALLOWED_FILES = {"SystemClock.java"}  # the one adapter between the Clock interface and the system clock
 
 
 def check_f7() -> list[Violation]:
