@@ -1,5 +1,7 @@
 # 控制器中枢化改造计划（C0–C4）
 
+> **部分被取代(2026-10-08)**:故障经控制器 NETCONF 下发到链路两端、节点按仿真时钟生效,以及由 Backend 经控制器启停时钟,已被 `control-system-architecture.md` v2 D8–D10 取代(故障在链路平面注入,设备检测上报;会话固定加速比)。见 `architecture-index.md`。
+
 > **从属关系（2026-10-06）**：本文件是 `commercial-architecture.md`（总纲）的子计划，并受 `rebaseline-2026-10-06.md` 约束。统一入口改由网关承担（不再是 Next.js 代理）；控制器不再每租户一个，而是每套常驻实验床按严格 ACTN 部署一个 MDSC（与 Parent PCE 同 pod）加每域一个 PNC（与 Domain PCE 同 pod）、按租约时分复用服务不同任务（总纲 D-C8，2026-10-06）；本文中的"控制器"按职责分别对应 MDSC 或 PNC；部署与凭据由 Operator 负责（不再是 ConfigMap）；设备清单来自 `Testbed` 的槽位清单。冲突时以总纲为准，见总纲 §16。
 
 > **已由 phase1-implementation-design 取代（F1，2026-10-06）**：本文中凡涉及“Backend 经控制器 RESTCONF 挂载设备、逐设备 PUT 故障、每租户一个控制器 Deployment”的部分均已过时。现状：MDSC/PNC 是 PCE pod 的 sidecar，设备清单由编译器写成 RFC 9195 实例数据，控制器自己挂载；故障计划经 `salasim-actn:schedule-link-faults` 一次下发；Backend 不再挂载任何设备。

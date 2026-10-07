@@ -1,375 +1,340 @@
 # 系统总体架构:功能架构 · 软件工程架构 · 代码架构
 
-> 状态:设计稿(2026-10-08),**无代码改动,未实现、未验证**。在动手改造(P0–P7,见 `simulation-awareness-inventory.md` §5)之前,先把全局结构定下来。
-> 本文是 `control-system-architecture.md`(分层与时间模型)的下位文档,与 `commercial-architecture.md`(SaaS 与测试床池)、`platform-data-architecture.md`(平台数据)、`network-native-database-design.md`(核心事实库)并列;冲突时:分层与依赖规则以 `control-system-architecture.md` 为准,商业运营细节以 `commercial-architecture.md` 为准,本文给出它们之上的**统一结构与工程约束**。
-> 已确认的前提(用户):这是真正的网络管控系统;仿真是平台层中的可选模块;设备层和管控核心完全不感知仿真;设备实时运行、环境加速回放;预测式路由保留并中性化;Emulator 恢复 RSVP 软状态;YANG 拆成核心工件和 sim 工件;从 P0 契约开始;Backend 统计拆分与遥测同步或先行均可。
+> 状态:设计稿 v2(2026-10-08),**无代码改动,未实现、未验证**。v2 吸收 2026-10-08 架构审计和优化建议(用户:"采纳你的意见")。
+> 本文是 `control-system-architecture.md`(分层、核心模型、时间与保真度)的下位文档,给出其上的统一功能、工程与代码结构。文档优先级见 `architecture-index.md`。
+> 已确认的前提:真正的网络管控系统;仿真是平台层中的可选模块;设备层和管控核心完全不感知仿真;设备实时运行、环境加速回放;预测式路由保留并中性化;Emulator 恢复 RSVP 软状态;YANG 拆成核心工件和 sim 工件;从 P0 契约开始。2026-10-08 新增:故障在链路平面注入;接触计划只是预测;一次会话一个加速比;核心拥有历史库并发布 `core_api_v1`;意图/状态分离;保真度模型。
 
-## 0. 设计原则(全局,逐条可检验)
+## 0. 设计原则(逐条可检验)
 
 | # | 原则 | 如何检验 |
 |---|---|---|
-| G1 | **真实管控系统优先**:对象、接口、时间都与真实网络同构;仿真只是外部的"环境"与"测量" | 把核心换成真实设备组成的网络,核心代码不需要改 |
-| G2 | **依赖单向**:平台 → 核心 → 设备;`sim` 在平台内,只向下引用;核心只引用 `iam.org` | §3.2 的架构适应度函数在 CI 里自动检查 |
-| G3 | **标准接口优先**:北向 RESTCONF/YANG,管理面 NETCONF/YANG-push,控制面 PCEP/RSVP-TE/OSPF-TE;自定义只放在"尚无标准"的地方,且放进 `salasim-*` 模块 | YANG 模块清单;PCEP 码点登记表 |
-| G4 | **每类事实只有一个权威来源**(SSOT):现势配置在控制器数据存储,历史在 Postgres,计费账本在 Postgres,测试床现势在 K8s CRD | `commercial-architecture.md` §10 的表;§2.5 |
-| G5 | **事实只追加,状态是视图**:事件为真相,"当前""区间"由视图推导;迟到、乱序是常态 | `network-native-database-design.md` |
-| G6 | **时间只有 UTC**(核心);仿真时间只在 `sim` 内换算 | 核心的表、载荷、日志里没有仿真时间字段 |
-| G7 | **失败要大声**:不编造回退值、不静默跳过;缺状态就报错或标注"不完整" | 已有审计结论(回退捏造类问题全部修复);新增代码评审必查 |
-| G8 | **时间敏感路径上不放锁内 I/O,不做全局串行**;并发用按键分区的单写者通道 + RCU 快照 | JFR 监视器等待阈值;`runBoundaryLock` 类全局锁不再出现 |
-| G9 | **不可变与可复现**:镜像按摘要引用;场景修订、种子、镜像摘要进入 manifest;结果可重算 | `job.manifest`;结果缓存可丢弃重建 |
-| G10 | **开发期不写兼容层**(GA 前):改形状、改调用方;GA 后才做迁移与版本兼容 | 已有约定;GA 之后启用 `/v1` 兼容规则 |
+| G1 | **真实管控系统优先**:对象、接口、时间与真实网络同构;仿真只是外部的"环境"与"测量" | 把设备换成真实设备,核心代码不改 |
+| G2 | **依赖单向**:平台 → 核心 → 设备;`sim` 在平台内;核心对平台零外键,只持有不透明 `tenant_id` | §3.2 适应度函数 |
+| G3 | **标准接口优先**:北向 RESTCONF/YANG,管理面 NETCONF/YANG-push,控制面 PCEP/RSVP-TE/OSPF-TE;接触计划先评估 IETF TVR;自定义只放进 `salasim-*` 并写明理由 | YANG 清单;PCEP 码点登记表 |
+| G4 | **每类数据一个权威**:意图在控制器;LSP 状态在 PCE LSP-DB;实际拓扑在设备;历史在核心历史库;账本在平台库;测试床现势在 CRD | `control-system-architecture.md` §2.3、§5 |
+| G5 | **事实只追加,状态是视图**;迟到、乱序是常态 | `network-native-database-design.md` |
+| G6 | **核心只有 UTC**;仿真时间只在 `sim` 换算 | 核心表、载荷、日志无仿真时间 |
+| G7 | **环境与管理分开**:仿真改变的是"物理环境"(链路平面),不是设备配置 | 仿真代码中没有对设备的 NETCONF 写 |
+| G8 | **失败要大声**:不编造回退值、不静默跳过;缺状态就报错或标"不完整" | 评审必查 |
+| G9 | **时间敏感路径不放锁内 I/O、不做全局串行**;按键分区的单写者通道 + RCU 快照 | JFR 监视器等待阈值 |
+| G10 | **可复现按结果集合定义**:镜像摘要、场景修订、种子进 manifest;回归比较集合,不比较毫秒时序 | §3.5 |
+| G11 | **开发期不写兼容层**(GA 前);但阶段内"先建新路径、切换、同一变更删旧路径" | §5 |
 
 ## 1. 全景
 
 ```
-┌─ 平台层 (platform) ─────────────────────────────────────────────────────────────────────┐
-│  Web 控制台 ─ 网关 ─ 平台 API ─ 身份(Keycloak) ─ 目录 ─ 作业/调度 ─ 账本/计费(Lago) ─ 计量 ─ 审计 │
-│                                         │ 租约                                           │
-│  ┌─ 仿真模块 (sim,可选) ──────────────────▼─────────────────────────────────────────────┐ │
-│  │ 场景编译 · 回放器(接触计划/故障计划) · 仿真节点编排 · 窗口与结果 · 对比/战役         │ │
-│  └───────────────────────────────────────────────────────────────────────────────────────┘ │
-└──────────┬──────────────────────────────────────────────────────────────────▲─────────────┘
-           │ 开通网络 / 安装接触计划 / NETCONF 改配置      读历史(只读)         │ 事实(JetStream)
-┌──────────▼─── 管控核心 (core) ─ 每个被管网络一套 ──────────────────────────────┴─────────────┐
-│  北向 RESTCONF ─ 控制器(MDSC) ─ 业务/LSP 生命周期 ─ 事务 ─ 告警 ─ 清单与拓扑 ─ 观测/事实出口  │
-│                       │ MPI: NETCONF + YANG-push                                            │
-│                  PNC + 域 PCE ×D ── PCEP(H-PCE) ── 父 PCE                                    │
-│      算路(域内/跨域/预测) · 保护与恢复 · TED/账本 · 信令(PCEP/RSVP-TE) · OSPF-TE(规划)       │
-└──────────┬──────────────────────────────────────────────────────────────────────────────────┘
-           │ SBI: NETCONF · PCEP · RSVP-TE · OSPF-TE(对真假设备一致)
-┌──────────▼─── 设备层 (network) ───────────────────────────────────────────────────────────┐
-│   真实设备   或   Emulator 节点(PCC + RSVP + NETCONF 代理 + FRR,行为与真实设备一致)         │
-└────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─ 平台层 ──────────────────────────────────────────────────────────────────────────────┐
+│ Web 控制台 ─ 网关 ─ 平台 API ─ 身份(Keycloak) ─ 目录 ─ 作业 ─ 账本/计费 ─ 计量 ─ 审计     │
+│ ┌─ 仿真模块 (sim) ──────────────────────────────────────────────────────────────────┐ │
+│ │ 场景编译 · 回放器 · 链路平面服务 · 节点编排 · 窗口/结果/保真度 · 对比                │ │
+│ └──────┬───────────────────────────────┬────────────────────────────────▲──────────┘ │
+└────────┼───────────────────────────────┼────────────────────────────────┼────────────┘
+         │ 北向 RESTCONF:网络/业务/接触计划 │ 介质契约:载波、时延、丢包          │ 只读 core_api_v1
+┌────────▼──── 管控核心 ──────────────────┼────────────────────────────────┴────────────┐
+│ 北向 RESTCONF ─ 控制器(MDSC:意图、事务、告警、清单、接触计划) ─ 核心历史库 + 摄取       │
+│                 │ MPI: NETCONF + YANG-push                                ▲ JetStream │
+│            PNC + 域 PCE ×D ── PCEP(H-PCE) ── 父 PCE ───────────────────────┘           │
+│   算路(域内/跨域/预测) · 保护恢复 · TED(实际拓扑缓存) · LSP-DB · 信令 · 计划对账         │
+└────────┬───────────────────────────────┼─────────────────────────────────────────────┘
+         │ SBI: NETCONF · PCEP · RSVP-TE  │
+┌────────▼───────────────────────────────▼─────────────────────────────────────────────┐
+│ 设备层:真实设备 或 Emulator(网元逻辑 + 端口驱动;端口驱动读介质载波)                    │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 2. 系统功能架构
 
 ### 2.1 功能域地图
 
-| 层 | 功能域 | 能力(做什么) | 权威数据 |
+| 层 | 功能域 | 能力 | 权威数据 |
 |---|---|---|---|
-| 平台 | 身份与租户 | 注册、组织、成员、令牌、实名;每租户隔离 | Keycloak(凭据)、`iam` |
-| 平台 | 目录 | 场景/配置模板与不可变修订、编译缓存 | `catalog` |
-| 平台 | 作业与调度 | 报价、提交、排队、绑定租约、阶段状态机、结束归因 | `job`、K8s CRD(现势) |
+| 平台 | 身份与租户 | 注册、组织、成员、令牌、实名;`org_id ↔ tenant_id` 映射 | Keycloak、`iam` |
+| 平台 | 目录 | 场景/配置模板与不可变修订 | `catalog` |
+| 平台 | 作业与调度 | 报价、提交、排队、绑定租约、状态机、归因结算 | `job`、CRD |
 | 平台 | 账本与计费 | 充值、授予、冻结/结算/释放、价目、发票 | `ledger`、`billing`、Lago |
-| 平台 | 测试床车队 | 池伸缩、租约(排他)、重置校验、回收 | CRD、`fleet` |
+| 平台 | 测试床车队 | 池、租约、重置校验、回收 | CRD、`fleet` |
 | 平台 | 计量与审计 | 用量事件、哈希链审计 | `meter`、`audit` |
-| 平台 | 结果门户 | 结果查询、对比、导出(读核心历史 + sim 派生) | `ana`、`sim` 结果 |
-| 平台·sim | 场景编译 | 星座/拓扑/业务/故障场景 → 接触计划 + 故障计划 + 业务清单 | 场景修订 + `job.manifest` |
-| 平台·sim | 回放器 | 按墙钟(可加速)推进:向控制器安装接触计划、经 NETCONF 注入故障、起停节点 | `sim.clock_*`、`sim.fault_*` |
-| 平台·sim | 节点编排 | 创建/销毁 Emulator(K8s),节点身份、地址 | `sim.node_fleet` |
-| 平台·sim | 结果采集 | 窗口、切片、对核心事实的派生统计、可靠性与恢复指标 | `sim.result_*`(缓存,可重算) |
-| 核心 | 清单与拓扑 | 网络、节点、接口、链路、TE 属性;接触计划(预测拓扑变化) | 控制器数据存储;历史 `net` |
-| 核心 | 业务/LSP 生命周期 | 开通、修改、删除;状态机;保护组 | `te` |
-| 核心 | 路径计算 | 域内、跨域(H-PCE)、预测式(针对计划时刻的拓扑)、SRLG/分离路径、多目标 | PCE 内存 TED + 账本 |
-| 核心 | 保护与恢复 | 故障/拓扑变化→受影响 LSP→重路由;保护切换、WTR | `te`、`fm` |
-| 核心 | 资源账本 | 链路带宽占用、预留、路径级占用 | PCE LSP-DB / `LspResourceIndex`;历史 `net` 事件 |
-| 核心 | 故障与告警 | 检测(接口状态)、告警 raise/clear/ack、检测与恢复时延 | `fm` |
-| 核心 | 配置与事务 | NETCONF candidate/confirmed-commit、跨设备事务、变更归档 | 控制器 + `cp` 事务 |
-| 核心 | 性能与观测 | 计数器、时延、控制面时延、事实出口 | `pm`、`cp` |
-| 核心 | 北向 API | RESTCONF(ietf-te 等)、SSE 事件、NACM | 控制器 |
-| 设备 | NE 控制面 | PCC、RSVP-TE 信令、(规划)OSPF-TE | 设备本地 |
-| 设备 | NE 管理面 | NETCONF:接口 `enabled`/`oper-status`、YANG-push、(新增)链路属性 | 设备本地 |
+| 平台 | 结果门户 | 结果查询、对比、导出(读 `core_api_v1` + `sim.result_*`) | — |
+| 平台·sim | 场景编译 | 星座/拓扑/业务/故障 → 环境变化序列 + 接触计划 + 负载计划 + 节点配置 | 场景修订 + 对象存储 + `job.manifest` |
+| 平台·sim | 回放器 | 按 `sim(t)` 推进:安装接触计划、驱动链路平面、经北向提交负载;记录实际下发 | `sim.session`、`sim.environment_action` |
+| 平台·sim | 链路平面 | 端口载波与链路属性(默认逻辑载波;可选隧道 + netem) | 链路平面服务内存态 |
+| 平台·sim | 节点编排 | K8s 创建/销毁 Emulator,节点身份、地址、节点配置 | `sim.node_fleet` |
+| 平台·sim | 结果与保真度 | 窗口、切片、可靠性/恢复/可用性;指标分类;保真度比与检验 | `sim.result_*` |
+| 核心 | 清单与拓扑 | 节点、接口、链路、TE 属性(实际,来自设备) | 控制器数据存储 |
+| 核心 | 接触计划 | 预测的拓扑变化:安装、替换、版本;计划偏差 | 控制器数据存储 |
+| 核心 | 业务/LSP | 意图的开通、修改、删除;LSP 状态机;保护组 | 意图:控制器;状态:LSP-DB |
+| 核心 | 路径计算 | 域内、跨域(H-PCE)、预测式、SRLG/分离、多目标 | PCE 内存 |
+| 核心 | 保护与恢复 | 实际拓扑变化 → 受影响 LSP → 重路由;保护切换、WTR | LSP-DB |
+| 核心 | 故障与告警 | 运行 down(管理 up)→ 告警;raise/clear/ack;检测与恢复时延 | `fm` |
+| 核心 | 配置与事务 | NETCONF candidate/confirmed-commit、跨设备事务、变更归档 | 控制器 + `cp` |
+| 核心 | 性能与观测 | 计数器、控制面时延、事实出口 | `pm`、`cp` |
+| 核心 | 历史库 | 摄取、去重、分区、保留;发布 `core_api_v1` | 核心历史库 |
+| 设备 | 网元控制面 | PCC、RSVP-TE(含软状态与 RFC 2961 刷新压缩)、(可选)OSPF-TE | 设备本地 |
+| 设备 | 网元管理面 | NETCONF:`ietf-interfaces` 管理/运行状态、YANG-push、链路属性 | 设备本地 |
+| 设备 | 端口驱动 | 读介质契约的载波与属性 → 接口运行状态 | — |
 
-### 2.2 FCAPS 对照(检验功能是否完整)
+### 2.2 FCAPS 对照
 
-| FCAPS | 现状 | 目标位置 |
+| FCAPS | 现状 | 目标 |
 |---|---|---|
-| Fault | 仅有"管理操作失败"类告警 | 核心 `fm`:链路/LSP down 合成告警 + 节点上报;X.733/ietf-alarms |
-| Configuration | 配置散落在 Backend profile 与各组件属性 | 控制器数据存储为现势;变更经事务归档;profile 属于 sim/平台目录 |
-| Accounting | 无 | 平台:计量 + 账本 |
+| Fault | 仅"管理操作失败"类告警 | 核心 `fm`:运行 down 合成告警 + 节点上报;ietf-alarms |
+| Configuration | 散落在 Backend profile 与组件属性 | 控制器数据存储为意图;事务归档;profile 归平台目录/sim |
+| Accounting | 无 | 平台计量 + 账本(DDL 已验证,服务暂缓) |
 | Performance | PCE 事实 + 指标 | 核心 `pm`/`cp`;结果派生在 sim |
 | Security | 租户 TLS、令牌 | 平台 iam/audit;核心 NACM + TLS |
 
-### 2.3 四条端到端流程(验证架构是否自洽)
+### 2.3 五条端到端流程
 
-**A. 开通业务(核心,与仿真无关)**
-北向 RESTCONF 提交 `ietf-te` 业务 → 控制器校验并分域(MDSC)→ PNC/父 PCE 算路(单域/跨域)→ PCInitiate → 设备 RSVP-TE 建立 → PCRpt 回报 → LSP 状态事件入 `te` → 北向返回状态。失败要带原因码,不编造成功。
+**A. 开通业务**:北向 RESTCONF 写 `ietf-te` 意图 → MDSC 校验分域 → PNC/父 PCE 算路 → PCInitiate → 设备 RSVP-TE 建立 → PCRpt → LSP-DB 更新 → 事实入核心历史库 → 控制器投影状态返回北向。失败带原因码。
 
-**B. 链路故障与恢复(核心)**
-接口 `oper-status` 变化(YANG-push)→ PNC 生成链路状态报告(`network-id` + 代际 + `last-change`)→ 域 PCE 更新 TED 与账本 → 受影响 LSP 检测 → 重路由(按键分区的单写者通道)→ 结果事件;`fm` 记录检测与恢复时延。**核心只看到"一个接口 down 了",不知道它是真实故障还是仿真注入。**
+**B. 链路故障与恢复**:链路平面把某端口载波置为 down → 设备端口驱动检测到 → 接口运行状态 down(管理状态仍 up)→ YANG-push → PNC 生成链路状态报告(`network-id` + 代际 + `last-change`)→ 域 PCE 更新 TED → 受影响 LSP 检测 → 重路由(按键单写者通道)→ 结果事件;`fm` 产生告警并记录检测与恢复时延。**核心只看到"一个接口运行 down 了"。**
 
-**C. 拓扑按计划变化(核心,卫星/接触计划)**
-控制器持有"接触计划"(UTC 的 `valid-from/to`、版本、替换语义)→ PCE 按 UTC 调度器在计划时刻应用拓扑变化 → 预测式路由针对未来时刻的拓扑提前算路并在切换点应用 → 受影响 LSP 重路由。计划本身可以来自真实轨道预测,也可以来自仿真。
+**C. 拓扑按计划变化(卫星)**:控制器持有接触计划(UTC、版本)→ PCE 对计划时刻的拓扑提前算路 → 链路实际建立/拆除(真实网络里是物理事件,测试床里由链路平面执行)→ 实际状态经流程 B 的路径到达 PCE → PCE 把预计算结果作为候选应用 → 实际与计划不符时发 `plan-deviation`,以实际为准。
 
-**D. 运行一次仿真场景(平台·sim)**
-`job.submit`(原子:报价 + manifest + 作业 + 冻结积分 + 审计)→ 排队 → 租约绑定测试床 → 创建被管网络(`core.network`,归属租户)→ sim 起停 Emulator 节点 → 回放器安装接触计划 → 回放器按墙钟(可加速)推进:更新接触计划进度、经 NETCONF 注入故障、记录 `sim.clock_segment/sample` → 业务负载经北向 API 提交(与真实用户一致)→ 核心照常工作并产出事实 → 窗口结束 → sim 从核心历史按窗口派生结果 → `job.finish` 按归因结算 → 租约释放、测试床重置校验。
+**D. 运行一次仿真场景**:`job.submit` → 排队 → 租约绑定测试床 → 经北向创建 `core.network` → 节点编排起 Emulator(节点配置来自编译产物,相当于运营者写配置)→ 创建 `sim.session`(固定加速比)→ 回放器安装接触计划(UTC)→ 按 `sim(t)` 驱动链路平面、经北向提交负载,逐条记 `environment_action` → 核心照常工作、产出事实 → 窗口结束 → sim 读 `core_api_v1` 派生结果并计算保真度 → `job.finish` 结算 → 租约释放、测试床重置校验。
 
-### 2.4 接口清单(契约是架构的骨架)
+**E. 核心重启恢复**:PCE 重启 → 空网络可服务 → PCEP 会话重建后用 RFC 8232 状态同步取回 LSP-DB → 从 PNC 取回 TED → 从控制器取回意图与接触计划 → 对账后恢复正常。不依赖 Postgres 恢复状态。
 
-| 接口 | 两端 | 协议/模型 | 契约来源(SSOT) | 谁拥有 |
+### 2.4 接口清单
+
+| 接口 | 两端 | 协议/模型 | 契约来源 | 拥有者 |
 |---|---|---|---|---|
-| 北向业务 | 用户/平台 ↔ 控制器 | RESTCONF + `ietf-te` + `salasim-service` | YANG 工件(核心) | 核心 |
-| 平台 API | 前端/客户端 ↔ 平台服务 | REST(OpenAPI) | OpenAPI(由平台代码生成并提交) | 平台 |
-| MPI | MDSC ↔ PNC/PCE | NETCONF + YANG-push;抽象 te-topology | YANG 工件(核心) | 核心 |
-| SBI 管理 | PNC ↔ 设备 | NETCONF:`ietf-interfaces`,(新增)链路属性,YANG-push | YANG 工件(核心) | 核心/设备 |
-| SBI 控制 | PCE ↔ 设备;PCE ↔ PCE | PCEP(含 H-PCE)、RSVP-TE、OSPF-TE | 协议库 + `docs/pcep-codepoints.md` 登记表 | 核心/设备 |
-| 接触计划 | 回放器/任何计划源 ↔ 控制器 | 数据存储或 RPC:安装/替换计划(UTC、版本) | **新**:核心 YANG 模块(P0) | 核心 |
-| 链路状态报告 | PNC ↔ PCE | `report-link-state`(`network-id`、代际、`last-change`) | 核心 YANG(P0 中性化) | 核心 |
-| 事实流 | 核心 → 摄取 | JetStream;载荷由 YANG 定义(RFC 7951 JSON);`occurredAt` 为观察者 UTC | 核心 YANG + 载荷契约(P0) | 核心 |
+| 北向 | 用户/平台/sim ↔ 控制器 | RESTCONF + `ietf-te` + `salasim-service` | 核心 YANG | 核心 |
+| 接触计划 | 计划源(轨道预测/回放器)↔ 控制器 | RESTCONF;TVR 调度模型或 `salasim-*`(P0 评估) | 核心 YANG | 核心 |
+| 平台 API | 前端 ↔ 平台服务 | REST(OpenAPI) | OpenAPI | 平台 |
+| MPI | MDSC ↔ PNC/PCE | NETCONF + YANG-push;抽象 te-topology | 核心 YANG | 核心 |
+| SBI 管理 | PNC ↔ 设备 | NETCONF:`ietf-interfaces`、链路属性、YANG-push | 核心 YANG | 核心/设备 |
+| SBI 控制 | PCE ↔ 设备;PCE ↔ PCE | PCEP(含 H-PCE、RFC 8232)、RSVP-TE、(可选)OSPF-TE | 协议库 + `pcep-codepoints.md` | 核心/设备 |
+| 链路状态报告 | PNC ↔ PCE | `report-link-state`(`network-id`、代际、`last-change`) | 核心 YANG | 核心 |
+| 事实流 | 核心 → 核心摄取 | JetStream;载荷由 YANG 定义(RFC 7951) | 核心 YANG + 载荷契约 | 核心 |
+| 历史读取 | sim/结果门户 ← 核心 | SQL 视图 `core_api_v1`(只读角色) | `core_api_v1` 定义 | 核心提供 |
+| **介质契约** | 链路平面 ↔ 设备端口驱动 | 端口载波 up/down、时延、丢包、带宽(无时间/会话概念) | 设备侧契约(相当于硬件规格) | 设备定义,sim 实现 |
 | 租约/测试床 | 平台 ↔ K8s | CRD:Testbed、TestbedPool、SimulationJob | CRD 定义 | 平台 |
-| 仿真控制 | 回放器 → 核心/设备 | **只用上面的标准接口**,无专用通道 | — | sim |
-| 历史读取 | sim/结果门户 ← 核心历史 | SQL 视图/只读 API(只读角色) | `core` 视图 | 核心(提供)/平台(消费) |
+
+仿真没有任何专用通道进入核心:它只用北向、介质契约、K8s 和 `core_api_v1`。
 
 ### 2.5 数据架构指引
 
-核心事实的表结构、平台表、仿真表分别见 `network-native-database-design.md`、`platform-data-architecture.md`、`control-system-architecture.md` §2–3。要点:核心表键是 `network_id` 加 UTC 时间,按事件时间范围分区;`sim.*` 引用核心,核心不引用 `sim`;平台表受行级安全保护。
+见 `control-system-architecture.md` §2、§3.5、§5;核心事实表结构见 `network-native-database-design.md`(待按 v2 重写键、时间轴和归属);平台表见 `platform-data-architecture.md`。
 
 ## 3. 软件工程架构
 
-### 3.1 仓库拓扑与所有权
+### 3.1 仓库拓扑
 
-现状(已核实):9 个独立 git 仓库,均在 `framework-enhancement` 分支;顶层目录本身不是仓库。仅 `emulator`、`pce`、`topology` 有 `.travis.yml`,`topology` 另有 `Jenkinsfile`;其余无 CI 配置。
+现状:9 个独立 git 仓库 + `docs`,均在 `framework-enhancement` 分支;仅 `emulator`、`pce`、`topology` 有 `.travis.yml`,`topology` 另有 `Jenkinsfile`。
 
-| 仓库 | 类型 | 角色(目标) | 目标变化 |
-|---|---|---|---|
-| `salasim_gmpls_yang` | Maven 制品 | 标准模块(固定版本)+ salasim 模块 | **拆成 `salasim-yang`(核心)与 `salasim-yang-sim`(sim 专用)两个工件**;核心工件不得含任何仿真模块 |
-| `salasim_gmpls_protocols` | Java 库 | PCEP/RSVP/OSPF/BGP-LS 编解码 | 去掉仿真码点(TLV 65510 系列、NT 33…);码点登记表为契约 |
-| `salasim_gmpls_topology` | Java 库 | TED 模型、RCU 快照、拓扑 JSON/增量 | `simjson` 改名为拓扑快照/增量格式;删除调度文件死代码 |
-| `salasim_gmpls_netconf` | Java 库 | NETCONF 服务端、YANG-push、校验 | 清理夹具里的仿真模块;`NetworkRef` 去帧号 |
-| `salasim_gmpls_pce` | Java 服务 | 域 PCE / 父 PCE | 按 §4.1 拆成模块;去静态单例;去仿真 |
-| `salasim_gmpls_emulator` | Java 服务 | 设备层:仿真节点(行为同真实设备) | 缩 `mgmt`;去 `NodeSimClock`;恢复 RSVP 软状态 |
-| `salasim_gmpls_controller` | Java 服务(lighty.io) | MDSC + PNC | 去 `run/fleet/fault`;保留抽象与链路状态 |
-| `salasim_gmpls_backend` | Python 服务 | 平台 API + (现在)仿真 + 统计 | **拆分**:平台服务留在本仓库;sim 部分迁入新仓库 |
-| `salasim_gmpls_frontend` | Next.js | Web 控制台 | 按域分区路由,见 §4.4 |
-| `docs` | 文档仓库 | 架构、ADR、运维手册、审计 | 目录重整,见 §3.9 |
-| **新** `salasim_gmpls_sim` | Python 服务/库 | 仿真模块:场景编译、回放器、节点编排、结果派生 | 来自 backend 的 B 类模块(见盘点 §4.6) |
-| **新** `salasim_gmpls_platform` | 部署 | Helm/Kustomize + GitOps;**发布清单**(各组件版本 + 镜像摘要) | `commercial-architecture.md` §15 已规划 |
-
-决定:**保持多仓库(polyrepo)**,不合并为单体仓库。理由:Java 库与服务已按制品独立发布,历史提交量大(backend 1630、pce 893、frontend 532);合并的收益(原子跨库修改)用**发布清单 + 契约测试**替代。代价是跨仓库改动需要协调,靠 §3.3 的版本规则和 §3.5 的契约测试兜底。
-
-### 3.2 依赖规则与架构适应度函数(自动执行)
-
-**允许的依赖边**(箭头 = "可以依赖"):
-
-```
-frontend → 平台 API(OpenAPI)
-平台服务 → 核心(北向 RESTCONF / 只读历史视图 / NETCONF)
-sim     → 核心(同上)    sim → 平台内部(catalog/job/fleet 的服务接口)
-核心服务 → 协议库 / 拓扑库 / netconf 库 / yang(核心工件)
-设备     → 协议库 / 拓扑库 / netconf 库 / yang(核心工件)
-库       → 只依赖更底层的库(protocols ← topology ← pce;yang 在最底层)
-```
-
-**禁止**:核心或设备依赖 `sim`、`salasim-yang-sim`、平台服务;库依赖服务;服务之间共享数据库表(只经接口)。
-
-**适应度函数(每条都是一个会在 CI 失败的检查):**
-
-| # | 检查 | 实现 |
+| 仓库 | 角色(目标) | 目标变化 |
 |---|---|---|
-| F1 | Java 模块依赖方向 | Maven Enforcer `bannedDependencies` + 模块图测试 |
-| F2 | Java 包内规则(compute 不依赖 signaling、核心包不引用仿真包) | ArchUnit |
-| F3 | Python 上下文边界 | import-linter(`core_client`、`sim`、`platform` 契约) |
-| F4 | **核心/设备仓库中不得出现仿真词汇** | CI 扫描禁用词(`simulat`、`speedup`、`frame`、`slice`、`runId`、`simulationTimeMs`、`/sim/` 等),白名单文件须评审;现有存量作为清理清单逐步清零 |
-| F5 | YANG 依赖:核心模块不得 import `salasim-yang-sim` 中的模块 | `validate.sh` 扩展 |
-| F6 | **数据库依赖**:核心 schema 的外键只能指向 `iam.org`;核心视图不引用 `sim.*` | 沿用已有 Postgres 临时实例测试框架,加一条目录检查 |
-| F7 | 时钟不变量:核心里不得读取"仿真时钟";代码里取时间只能通过注入的 `Clock` | ArchUnit:禁止直接 `System.currentTimeMillis()`/`Instant.now()`(白名单:时钟适配器) |
-| F8 | 无静态单例持有可变领域状态 | ArchUnit(禁止领域包里的 `static` 可变字段) |
-| F9 | PCEP 码点唯一且已登记 | 测试:码点常量 ⊆ `pcep-codepoints.md` 表,且无仿真码点 |
-| F10 | 载荷契约:事实 JSON 必须能被对应 YANG 模型校验;不得含仿真字段 | 契约测试(YANG 往返) |
+| `salasim_gmpls_yang` | 标准模块 + salasim 模块 | 拆成 `salasim-yang`(核心,含介质契约)与 `salasim-yang-sim` 两个工件(取代 2026-10-06 "单一工件" R3) |
+| `salasim_gmpls_protocols` | PCEP/RSVP/OSPF/BGP-LS 编解码 | 去仿真码点;码点登记表为契约 |
+| `salasim_gmpls_topology` | TED 模型、RCU 快照、拓扑格式 | `simjson` 改名;删死代码 |
+| `salasim_gmpls_netconf` | NETCONF 服务端、YANG-push | 清理夹具里的仿真模块;`NetworkRef` 去帧号 |
+| `salasim_gmpls_pce` | 域 PCE / 父 PCE | 包级重组(§4.1);去静态单例;去仿真;计划对账;RFC 8232 恢复 |
+| `salasim_gmpls_emulator` | 设备层 | 端口驱动 + 介质客户端;去 `NodeSimClock`;恢复 RSVP 软状态;接口来自节点配置 |
+| `salasim_gmpls_controller` | MDSC + PNC | 去 `run/fleet/fault`;接触计划存储;意图/状态投影 |
+| `salasim_gmpls_backend` | 平台服务 + sim 模块 + 核心摄取(过渡) | 仓库内分三个顶层包:`salasim/`(平台)、`salasim_sim/`(仿真)、`salasim_core_history/`(核心摄取与视图,将来随核心部署);import-linter 约束 |
+| `salasim_gmpls_frontend` | Web 控制台 | 先盘点内部结构,再按 `(platform)/(network)/(sim)` 分区 |
+| `docs` | 文档 | 先建 `architecture-index.md`;目录重整单独做 |
+
+决定:**保持多仓库,暂不新建仓库**。sim 和核心摄取先在 backend 仓库内以独立顶层包存在,依赖规则与适应度函数从第一天就按独立仓库标准执行,稳定后再拆。部署清单仓库(`salasim_gmpls_platform`)在首次部署前再建。
+
+### 3.2 依赖规则与适应度函数
+
+**允许的依赖边**:
+
+```
+frontend      → 平台 API(OpenAPI)
+平台服务       → 核心北向 / core_api_v1
+sim           → 核心北向 / core_api_v1 / 平台服务接口 / K8s / 链路平面(自有)
+核心服务       → 协议库 / 拓扑库 / netconf 库 / salasim-yang(核心)
+设备           → 协议库 / 拓扑库 / netconf 库 / salasim-yang(核心,含介质契约)
+库             → 更底层的库(yang ← protocols ← topology ← pce)
+```
+
+**禁止**:核心或设备依赖 `sim`、`salasim-yang-sim`、平台;sim 对设备做 NETCONF 写;sim 读核心内部表;核心建指向平台的外键;服务间共享表。
+
+**适应度函数(全部采用棘轮)**:每条检查在 P0 记录存量基线,CI 规则是"只许减少,不许增加";每个清理阶段结束时下调基线;基线文件随代码提交、变更需评审。
+
+| # | 检查 | 实现 | 初始基线 |
+|---|---|---|---|
+| F1 | Java 模块/工件依赖方向 | Maven Enforcer `bannedDependencies` | 0 |
+| F2 | Java 包规则:compute 不依赖 signaling;核心包不引用仿真包;Emulator 网元逻辑不依赖介质客户端 | ArchUnit(冻结存量违规) | 存量 |
+| F3 | Python 包边界(`salasim`、`salasim_sim`、`salasim_core_history`) | import-linter | 存量 |
+| F4 | 核心/设备仓库不得出现仿真概念 | **按符号扫描**(类名、包名、方法名、YANG 节点名、JSON 字段名),词表 `Simulation*`、`speedup`、`simulationTimeMs`、`runId`、`frameIdx`、`/sim/`…;`frame`/`slice` 只在"快照/统计切片"语义下计入,以太网帧和网络切片不计;日志与载荷字段另做文本扫描 | 存量 |
+| F5 | 核心 YANG 不 import `salasim-yang-sim` | `validate.sh` 扩展 | 存量 |
+| F6 | 核心 schema 零外部外键;核心视图不引用 `sim.*`;sim/平台 SQL 只出现 `core_api_*` | Postgres 临时实例 + 目录检查 + SQL 静态扫描 | 0(新 DDL) |
+| F7 | 取时间只经注入的 `Clock` | ArchUnit:禁止直接 `System.currentTimeMillis()`/`Instant.now()`(白名单:时钟适配器) | 存量 |
+| F8 | 领域包无静态可变字段 | ArchUnit | 存量 |
+| F9 | PCEP 码点唯一、已登记、无仿真码点 | 测试 | 存量 |
+| F10 | 事实载荷能被对应 YANG 校验,且无仿真字段 | 契约测试 | 0(新契约) |
 
 ### 3.3 版本与发布
 
-- **库**(protocols、topology、netconf、yang):语义化版本;GA 前允许破坏性变更但必须同步改调用方并在 CHANGELOG 说明。
-- **YANG**:两个工件;模块修订号严格递减(现有 `validate.sh` 规则),`modules.lock` 固定 IETF 模块哈希;移出模块属破坏性修订。
-- **服务**:以 OCI 镜像发布,**按摘要引用**(不用可变标签);镜像由 Jib 构建(同时解决 `target/` 残留和标签缓存问题)。
-- **发布清单**(`salasim_gmpls_platform` 仓库):一份文件列出各组件版本、镜像摘要、YANG 工件哈希、PCEP 码点登记表版本;它是 `job.manifest` 里"镜像摘要"的来源,也是回滚单元。
-- GA 前不写兼容层;GA 后:数据库迁移用显式迁移(基线之后),CRD 版本转换,`/v1` 内只做兼容变更,滚动升级不中断运行中的任务。
-- 已部署的 169 服务器视为 staging:改造期间只在本地分支做,**不推送、不部署,运行中的任务不受影响**;任何切换(尤其遥测契约)走单独的上线清单。
+- 库:语义化版本;GA 前允许破坏性变更,但同步改调用方并写 CHANGELOG。
+- YANG:两个工件;修订号严格递增;`modules.lock` 固定 IETF 模块哈希。
+- 服务:OCI 镜像按摘要引用;Jib 构建。
+- 发布清单:各组件版本、镜像摘要、YANG 工件哈希、码点表版本;是 `job.manifest` 的镜像摘要来源与回滚单元。
+- `core_api_v1`:视图集合有版本;GA 后不兼容变更走 `v2` 并行。
+- 169 服务器视为 staging:改造只在本地分支,**不推送、不部署,不影响运行中的任务**。
 
 ### 3.4 构建与工具链
 
 | 栈 | 构建 | 约定 |
 |---|---|---|
-| Java(PCE、Emulator、Controller、库) | Maven;新增父 POM/BOM `salasim-bom` 统一依赖版本(Jackson、SLF4J + Logback、jgrapht 1.5.2、JUnit 等) | 先 Java 25 运行时(`--release 17`),再 `--release 25`(沿用演进计划 W1);JSON 只用 Jackson,日志只用 Logback;Jib 出镜像 |
-| Python(平台、sim) | `pyproject.toml`;锁定依赖;ruff + 类型检查;pytest | 每个上下文一个可导入包,见 §4.2 |
-| 前端 | npm/Next.js | 类型由 OpenAPI 与 YANG 导出的 JSON Schema 生成,见 §4.4 |
-| 数据库 | `db/schema/*.sql` 基线;`db/tests` + 变异检查 | CI 中用临时 Postgres 实例跑(已验证的 `pg-verify`/`pg-mutate` 方法) |
-| YANG | `validate.sh`(pyang/yanglint)+ 代码生成(Java binding、Python、TS) | 工件构建时校验 |
+| Java | Maven + `salasim-bom`(Jackson、SLF4J + Logback、jgrapht 1.5.2、JUnit、ArchUnit) | 沿用 W1 的 Java 25 路线;JSON 只用 Jackson,日志只用 Logback;Jib |
+| Python | `pyproject.toml`、锁定依赖、ruff、类型检查、pytest、import-linter | 每个顶层包可独立导入 |
+| 前端 | npm/Next.js | 类型由 OpenAPI 与 YANG 导出的 JSON Schema 生成 |
+| 数据库 | `db/schema/*.sql` 基线 + `db/tests` + 变异检查 | CI 中用临时 Postgres 跑 |
+| YANG | `validate.sh`(pyang/yanglint)+ 代码生成 | 工件构建时校验 |
 
-### 3.5 测试策略(金字塔 + 契约 + 架构)
+### 3.5 测试策略
 
-| 层 | 内容 | 现状 / 目标 |
-|---|---|---|
-| 单元 | 纯函数、状态机、算法(Java 约 240 个 PCE 测试文件、Python 160 个测试文件) | 存量大;仿真耦合的需按盘点重写 |
-| 契约 | YANG 往返、PCEP 编解码金样、事实载荷 Schema、OpenAPI 契约、支付通知验签 | **新增**:契约测试是跨仓库协调的主要手段 |
-| 架构 | §3.2 的适应度函数 | **新增** |
-| 数据库 | 平台 28 变异 + 运行域 15 变异全部被抓到;新增核心键/时间轴后重写 | 已有框架 |
-| 组件 | 单个服务 + 假依赖(假设备、假控制器) | Emulator 兼作"设备测试替身" |
-| 系统 | kind 集群冒烟:注册 → 沙箱充值 → 提交 → 排队 → 绑定 → 运行 → 故障 → 结果 → 重置 → 第二个任务 → 结算 | 按 `commercial-architecture.md` §15 |
-| 确定性回归 | 相同场景与种子 → 受影响 LSP 集合与基线一致;跨测试床、跨重置次数一致 | 现有审计回归集迁移 |
-| 性能基线 | R20-C01(换帧/故障并发)、R36-C03(遥测积压);JFR 监视器等待 < 10 ms | 沿用演进计划验收门 |
-| 属性/变异 | 账本守恒、状态机、租约排他 | 已用变异检查;账本再补属性测试 |
+| 层 | 内容 |
+|---|---|
+| 单元 | 纯函数、状态机、算法;仿真耦合的测试按盘点重写 |
+| **无头确定性测试** | 核心组件注入虚拟 `Clock`,在进程内快速推进(PCE 计划对账、重试节奏、WTR);只是测试夹具 |
+| 契约 | YANG 往返、PCEP 金样、事实载荷 Schema、介质契约、`core_api_v1` 视图契约、OpenAPI |
+| 架构 | §3.2 的 F1–F10(棘轮) |
+| 数据库 | 平台 28 变异 + 核心变异(重写后)全部被抓到 |
+| 组件 | 单服务 + 假依赖;Emulator 兼作设备测试替身;链路平面兼作故障替身 |
+| **对等验证(仅测试工具)** | 把已有运行录下的事实流(如 `outputs/comparison-20260918`)回放进新摄取,比较派生统计与旧结果;作为 P3 验收,不进生产 |
+| **确定性回归(按集合)** | 相同场景与种子 → 受影响 LSP 集合、最终路径、告警集合与基线一致;不比较毫秒时序 |
+| **保真度检验** | 同场景 speedup=1 vs N,比较上述集合,输出分歧度 |
+| 系统 | kind 集群冒烟:注册 → 充值 → 提交 → 绑定 → 运行 → 故障 → 结果 → 重置 → 第二个任务 → 结算 |
+| 性能基线 | R20-C01、R36-C03;JFR 监视器等待 < 10 ms |
 
 ### 3.6 CI/CD
 
-现状几乎没有 CI。目标流水线(每仓库):`检查`(格式、静态检查、适应度函数)→ `单元 + 契约`→ `构建制品`(Maven 制品或 Jib 镜像 + SBOM + 漏洞扫描 + 签名)→ 发布清单更新 → `系统冒烟`(kind)→ 夜间:确定性回归 + 性能基线。环境:dev / staging / prod,GitOps(Argo CD);只部署摘要固定的镜像。**CI 的搭建本身是单独的工作项**,不依赖改造完成即可先做(尤其 F4、F5、F6 这类"防回潮"检查应在清理开始前就位)。
+每仓库流水线:`检查`(格式、静态检查、F1–F10 棘轮)→ `单元 + 契约` → `构建制品`(SBOM、漏洞扫描、签名)→ 发布清单更新 → `系统冒烟`(kind)→ 夜间:确定性回归、保真度检验、性能基线。**CI 骨架在 P0 搭建**,先上棘轮检查,再开始清理。CI 托管方式待定。
 
-### 3.7 可观测性工程
+### 3.7 可观测性
 
-OpenTelemetry(trace context 放进事实消息头)+ Prometheus 指标 + 结构化日志;**日志、指标不含仿真词汇**(核心侧);SLO 与告警按 `commercial-architecture.md` §14。核心侧提供"控制面时延"直方图(提交 → 状态确认),这是真实系统的指标;sim 侧再叠加"计划 vs 实际"的回放偏差。
+OpenTelemetry(trace context 进事实消息头)+ Prometheus + 结构化日志;核心侧日志、指标无仿真词汇;核心提供控制面时延直方图(意图提交 → 状态确认;拓扑变化 → 重路由确认);sim 侧叠加"计划 vs 实际下发"与保真度比。
 
 ### 3.8 安全与供应链
 
-每租户 TLS 与令牌(沿用现有);凭据只由 Keycloak 保管;镜像签名与 SBOM;API 令牌只存哈希(已实现于 `iam.api_token`);核心测试床不能访问平台数据库、计费或公网(`commercial-architecture.md` §3 层间规则)。
+每租户 TLS 与令牌;凭据只由 Keycloak 保管;镜像签名与 SBOM;API 令牌只存哈希;核心测试床不能访问平台数据库、计费或公网;sim 没有设备 NETCONF 写凭据;链路平面只在测试床内可达。
 
 ### 3.9 文档与决策记录
 
-现状:`docs/` 平铺 80 多个文件,含大量按日期的审计与修复记录。目标:
-
-```
-docs/
-  architecture/   活文档:本文、control-system-architecture、commercial-architecture、数据库设计…
-  adr/            决策记录(一决策一文件:背景、选项、决定、后果;记录用户确认日期)
-  runbooks/       部署、回滚、重置、故障处置
-  audits/         按日期的审计与修复记录(只增不改;现有 20260*** 与 R**-audit 归入此处)
-  archive/        已被取代的设计(保留,不再维护)
-```
-
-每篇活文档开头有"状态/取代关系/验证状态"头部(沿用现有写法)。已被本轮取代的文档(`database-redesign.md` 的存储形状、`telemetry-results-model.md` 的存储部分等)在头部标注被谁取代。**目录重整是单独的小任务,不与代码改造混提交。**
+- 立即:`architecture-index.md` 列出活文档、优先级与取代关系;被取代的内容在原文头部或原位标注。
+- 单独任务:目录重整为 `architecture/ adr/ runbooks/ audits/ archive/`,只移动与加头部,不改内容。
 
 ### 3.10 分支与协作
 
-维持 `framework-enhancement` 为集成分支;提交说明按已有约定;代码同步用 git 推拉(不用 SCP);改造按阶段 P0–P7 各自单独确认;跨仓库的契约变更(YANG、码点、载荷)先在 `docs/adr` 记录再改代码。
+`framework-enhancement` 为集成分支;git 推拉同步;阶段各自单独确认;跨仓库契约变更(YANG、码点、载荷、介质契约、`core_api_v1`)先写 ADR 再改代码。
 
 ## 4. 代码架构
 
-### 4.1 管控核心(Java):模块与包
+### 4.1 管控核心(Java)
 
-**通用结构**:端口与适配器。领域逻辑不依赖协议细节;PCEP、RSVP、NETCONF、HTTP、JetStream、SQLite/Postgres 都是适配器。
+通用结构:端口与适配器;PCEP、RSVP、NETCONF、HTTP、JetStream、Postgres 都是适配器。
 
-**PCE 拆分**(现状是一个模块,`es.tid.pce.*` 下的 `sim/`、`parentPCE/`、`server/`、`computingEngine/`、`http/`、`mgmt/`、`ospf/`、`telemetry/`):
+**PCE**:先在**包级**按下表重组,并用 ArchUnit 约束;暂不拆 Maven 模块(收益约八成,协调成本低),P2 之后视情况再拆。
 
-| 目标模块 | 内容 | 依赖(只能向下) |
+| 目标包 | 内容 | 只能依赖 |
 |---|---|---|
-| `pce-model` | TED 服务接口、带宽账本、链路身份、占用库、LSP-DB、领域事件类型(无 I/O) | 拓扑库 |
-| `pce-compute` | 算路算法:域内、MPLS、SRLG 分离、H-PCE、跨快照/预测式、路径缓存 | `pce-model` |
-| `pce-plan` | **接触计划**调度器与存储、预测式预计算与应用(替换 `AutonomousClockThread` 与帧源) | `pce-model`、`pce-compute` |
-| `pce-signaling` | PCEP 会话、PCInitiate/PCUpd、待确认跟踪、信令超时 | `pce-model`、协议库 |
-| `pce-recovery` | 受影响 LSP 检测、重路由、保护组与 WTR、退避与预算、恢复所有权 | `pce-model`、`pce-compute`、`pce-signaling` |
-| `pce-facts` | 事实发射器、出箱(outbox)、JetStream 传输 | `pce-model` |
-| `pce-mgmt` | NETCONF/RESTCONF 服务端适配、HTTP 只读 API、链路状态报告入口 | 上述各模块的接口 |
-| `pce-app` | 装配(依赖注入)、配置、`main` | 全部 |
+| `…pce.model` | TED 服务接口、带宽账本、链路身份、占用库、LSP-DB、领域事件(无 I/O) | 拓扑库 |
+| `…pce.compute` | 域内、MPLS、SRLG 分离、H-PCE、预测式、路径缓存 | model |
+| `…pce.plan` | 接触计划存储、预测式预计算、**计划对账**与 `plan-deviation` | model、compute |
+| `…pce.signaling` | PCEP 会话、PCInitiate/PCUpd、待确认跟踪、RFC 8232 状态同步 | model、协议库 |
+| `…pce.recovery` | 受影响 LSP、重路由、保护组与 WTR、退避与预算 | model、compute、signaling |
+| `…pce.facts` | 事实发射器、出箱、JetStream | model |
+| `…pce.mgmt` | NETCONF/RESTCONF 适配、链路状态报告入口 | 各包接口 |
+| `…pce.app` | 装配、配置、`main` | 全部 |
 
-关键规则:
-1. **无静态单例持有领域状态。** `SimRegistry` 拆为 `PceContext`(构造注入的服务集合:TED、账本、占用库、链路身份、计划存储);没有 run 也完整可用。
-2. **时钟注入**:所有时间读取经 `java.time.Clock`;测试用可控时钟。没有 `ClockAnchor`/`SimulationClock`/"仿真阶段 PLAYING"。
-3. **并发模型**:按键(LSP、保护组、链路)分区的单写者通道(复用现有 owner-FIFO 分片);TED 用 RCU 不可变快照整体替换;禁止全局锁内做 I/O(`runBoundaryLock` 类锁退役)。
-4. **代际而非 run**:异步工作用"网络代际/拓扑版本"做栅栏;重试节奏用毫秒或"已见拓扑版本数",不用"切片"。
-5. **预测式路由保留**,但键改为 `(plan-entry-id, plan-version)`,请求用 UTC 时刻或计划段引用(PCEP 新码点)。
-6. 包根:新模块使用 `net.salasim.pce.*`;**遗留 `es.tid.*` 不做整体改名**(避免无价值的巨大变更),随模块拆分自然迁移。
+规则:
+1. `PceContext`(构造注入的服务集合)取代静态 `SimRegistry`;无外部输入也能启动。
+2. 时间只经注入 `Clock`;没有 `ClockAnchor`/`SimulationClock`/"PLAYING"。
+3. 按键(LSP、保护组、链路)分区的单写者通道;TED 用 RCU 不可变快照;全局锁内不做 I/O。
+4. 异步工作用"网络代际/拓扑版本"做栅栏;重试节奏用毫秒或已见拓扑版本数。
+5. TED 只由实际链路状态报告更新;接触计划只驱动预计算。
+6. 新代码用 `net.salasim.pce.*`;遗留 `es.tid.*` 不整体改名。
 
-**Emulator**:`node-core`(LSP 管理、RSVP-TE 含软状态刷新/清理、PCC)、`node-mgmt`(NETCONF:`ietf-interfaces` 的 `enabled/oper-status`,新增链路属性;`LinkAdminState` 与 TED 执行器)、`node-app`。管理面只保留"按配置对账"的幂等逻辑,不含任何计时、时钟或 run 概念;接口清单来自节点配置,不来自编译器产物。
+**Emulator**:`node-core`(LSP 管理、RSVP-TE 软状态刷新/清理 + RFC 2961 刷新压缩、PCC)、`node-mgmt`(NETCONF:接口管理/运行状态、链路属性、YANG-push;只做按配置对账)、`node-port`(端口驱动:`PortDriver` 接口 + 介质客户端实现;把载波变化转成接口运行状态)、`node-app`。网元逻辑只依赖 `PortDriver` 接口。无计时、时钟或 run 概念;接口清单来自节点配置。
 
-**Controller**:`mdsc`(跨域组合、业务映射、事务)、`pnc`(域内抽象、链路状态链)、`plan`(接触计划存储与分发,来自 `NativeSchedule`/`AbstractScheduleComposer`)、`mpi`(NETCONF/YANG-push 适配)、`northbound`(RESTCONF)、`app`。删除 `run/`、`fleet/`、`fault/` 计划管线。
+**Controller**:`mdsc`(跨域组合、意图映射、事务、状态投影)、`pnc`(域内抽象、链路状态链)、`plan`(接触计划存储与分发)、`mpi`(NETCONF/YANG-push)、`northbound`(RESTCONF)、`app`。删除 `run/`、`fleet/`、`fault/`。代码只依赖 YANG 与 RESTCONF 契约,不依赖 lighty 内部类,便于替换实现(见 §6 闸门)。
 
-**库**:`protocols`(编解码,无服务逻辑,无仿真码点)、`topology`(TED、RCU 快照、拓扑格式)、`netconf`(服务端、推送、校验)、`yang`(核心)。
+**库**:`protocols`、`topology`、`netconf`、`yang`(核心)。
 
-### 4.2 平台服务(Python)
-
-**按限界上下文组织,而不是按技术层:**
+### 4.2 backend 仓库(Python):三个顶层包
 
 ```
-salasim/
-  iam/        {api, service, repo, domain}
-  catalog/
-  job/        (含状态机与 submit 事务入口)
-  ledger/     (账本;只通过 service 暴露 topup/freeze/settle/release)
-  billing/
-  fleet/      (租约、测试床池、与 K8s 对接)
-  meter/
-  audit/
-  results/    (结果门户:读核心历史 + sim 派生)
-  platform_api/  (FastAPI 装配,路由只调 service)
-  ingest/     (JetStream 消费 → 核心历史库,幂等、去重、游标)
+salasim/                平台(按限界上下文)
+  iam/ catalog/ job/ fleet/ meter/ audit/ results/ platform_api/
+  ledger/ billing/      DDL 与测试已验证;服务暂缓,待产品需求推动
+salasim_core_history/   核心历史:ingest(JetStream → 追加、去重、游标)、core_api_v1 视图 DDL、保留与分区
+salasim_sim/            仿真模块
+  scenario/   编译器:星座(Walker/TLE、skyfield)、域划分、负载、故障;产出 环境变化序列 + 接触计划 + 负载计划 + 节点配置
+  replay/     回放器:固定加速比、安装接触计划、驱动链路平面、提交负载、记录 environment_action
+  linkplane/  链路平面服务:逻辑载波(默认);隧道 + netem(可选高保真)
+  fleet/      节点编排
+  results/    窗口、切片、指标分类、保真度比;只读 core_api_v1
+  campaign/   对比、保真度检验、证据汇总
+  client/     访问核心与平台的唯一出口(RESTCONF、core_api_v1 只读连接)
 ```
 
-规则:**上下文之间只调 service 接口,不读对方的表**;`repo` 层是薄的 SQL 访问(psycopg + 显式 SQL,不使用跨上下文 ORM);写入规则放在数据库(约束、触发器、受控函数,已验证),服务层不重复实现;`api` 层只做鉴权、校验、序列化。数据库角色:`salasim_api`(经 RLS 只读 + `job.submit`)与内部角色(运维推进作业、账本操作)分离,与已验证的权限模型一致。
+规则:平台上下文之间只调 service 接口,不读对方的表;`salasim_sim` 只经 `client` 触及核心,不 import `salasim_core_history` 的内部模块;`salasim_core_history` 不 import 另外两个包;写入规则放在数据库(约束、触发器、受控函数)。
 
-### 4.3 仿真模块(`salasim_gmpls_sim`,Python)
+### 4.3 前端
 
-```
-salasim_sim/
-  scenario/   编译器:星座(Walker/TLE、skyfield)、域划分、业务生成、故障计划;产出 接触计划 + 故障计划 + 业务清单
-  replay/     回放器:墙钟/加速、接触计划安装、故障注入(NETCONF 写 enabled=false)、时钟分段与采样记录
-  fleet/      仿真节点编排(K8s 创建/销毁 Emulator;身份与地址)
-  results/    窗口、切片、可靠性/恢复/可用性指标;从核心历史派生;缓存可重算
-  campaign/   战役、对比、证据汇总
-  client/     访问核心与平台的客户端(RESTCONF、NETCONF、只读历史);**sim 与核心之间唯一的出入口**
-```
+迁移前先盘点内部结构。目标分区:`(platform)/`、`(network)/`(核心运维视图,不引用 sim)、`(sim)/`(场景、会话、结果、保真度);生成的 API 类型;ESLint 边界规则;TanStack Query + SSE。
 
-规则:`replay` 只经 `client` 触及核心,且只用标准接口;`results` 只读核心历史;`scenario` 无运行态;任何类型都不得让核心进程导入 sim 代码(进程与仓库都是分开的)。回放的"加速"只是 `replay` 推进计划和故障的速度;`sim.clock_segment/sample` 记录映射。
+### 4.4 跨语言约定
 
-### 4.4 前端
+- 标识:`network_id`、`tenant_id`、`lsp_id`、`link_id`、`port_id`;格式在 YANG 或 OpenAPI 中定义一次。核心只认设备上报的标识,不读编译产物。
+- 时间:UTC;`occurredAt`(观察者)/`receivedAt`/`timeSource`;取时间只经注入时钟。
+- 错误:稳定错误码与原因;不完整证据显式标注。
+- 幂等:外部写入口接受幂等键;摄取按 `(来源, 序号)` 去重。
+- 配置:核心调参属于 PCE/控制器配置,不属于"运行配置"。
+- 状态机:LSP、作业、会话、租约都有显式迁移表。
 
-按域分区路由,`sim` 页面与核心/平台页面分开:
-
-```
-src/
-  app/ (或 pages) 
-    (platform)/   登录、组织、令牌、计费、作业、目录
-    (network)/    拓扑、业务/LSP、告警、性能 —— 核心运维视图,不引用 sim
-    (sim)/        场景、回放控制、窗口、结果、对比
-  api/            从 OpenAPI/YANG-JSON-Schema 生成的客户端与类型(提交生成物,CI 校验未漂移)
-  ui/             设计令牌与基础组件(已有的字号/间距令牌、Accordion、ConfirmDialog 等)
-  i18n/           中英目录一一对应(已有)
-```
-
-规则:`(network)` 目录不得 import `(sim)`(适应度函数 F3 的前端版,用 ESLint 边界规则);数据获取统一用 TanStack Query + SSE(替代轮询);页面不含业务常量(沿用此前的硬编码清扫成果)。**前端当前内部结构我未逐文件核对,迁移前需先盘点。**
-
-### 4.5 跨语言的共享约定
-
-- **标识**:`network_id`(被管网络)、`lsp_id`、`link_id`(稳定链路 id,不来自编译器产物)、`org_id`;所有标识的格式与校验在 YANG 或 OpenAPI 中定义一次。
-- **时间**:UTC,`occurredAt`(观察者)/`receivedAt`(控制器);核心载荷无仿真时间;代码里取时间只经注入的时钟。
-- **错误**:带稳定错误码与原因;不编造回退值;不完整的证据显式标注(`evidence-incomplete`),不静默补齐。
-- **幂等**:所有外部写入口接受幂等键;摄取按 `(来源, 序号/哈希)` 去重。
-- **配置**:类型化配置对象 + 所有权表(`configuration-ownership.md`);核心的调参(路由搜索、恢复曲线、预计算规模)是 PCE 配置,不属于"运行配置"。
-- **状态机显式化**:LSP、作业、会话、租约都有显式迁移表,非法迁移由代码/数据库拒绝(作业状态机已在库内实现并验证)。
-
-### 4.6 现有代码到目标结构的映射(摘要)
+### 4.5 现有代码去向(摘要)
 
 | 现有 | 去向 |
 |---|---|
-| PCE `sim/` 中的账本/链路身份/影响检测(`LspResourceIndex`、`LinkIdentityRegistry`、`AffectedLspDetector`…) | `pce-model` / `pce-recovery`(改包名,去 `sim`) |
-| PCE `sim/` 帧、帧源、`FrameIngestion` | `pce-plan`(接触计划) |
-| PCE `sim/` 时钟、故障队列/注册表、运行启动与 RPC | 删除(回放器改用标准接口) |
-| PCE `crosssnapshot`、预计算 | `pce-compute` + `pce-plan` |
-| PCE `telemetry/`、各发射器 | `pce-facts`(去 run/slice 字段) |
-| Controller `pnc/abstraction`、`mdsc` 组合、链路状态链 | 保留并中性化 |
-| Controller `run/`、`fleet/`、`fault/` | 迁到 sim 的 `replay`/`fleet`(逻辑重写为经标准接口) |
-| Backend 平台部分(configuration profiles、operations、deployments、清理、镜像) | 平台服务(对应 `catalog`/`job`/`fleet`) |
-| Backend `topology_clock_service`、`scenario_compiler`、`walker_*`、故障规划、`v3_statistics` 切片部分 | `salasim_gmpls_sim` |
-| Backend `v3_statistics` 摄取部分、`telemetry_consumer` | 平台 `ingest/` |
-| YANG `salasim-simulation/fault/fleet/pce-run/pce-fleet/profile/analytics/run-config` | `salasim-yang-sim` 工件 |
+| PCE `sim/` 账本、链路身份、影响检测 | `pce.model` / `pce.recovery` |
+| PCE `sim/` 帧、帧源、`FrameIngestion` | `pce.plan`(接触计划,只做预测) |
+| PCE `sim/` 时钟、故障队列/注册表、运行启动与 RPC | 删除;故障来自实际链路状态 |
+| PCE `crosssnapshot`、预计算 | `pce.compute` + `pce.plan` |
+| PCE `telemetry/` | `pce.facts`(去 run/slice 字段) |
+| Emulator `node/mgmt` 仿真部分、`NodeSimClock` | 删除;故障入口改为 `node-port` |
+| Controller `run/`、`fleet/`、`fault/` | `salasim_sim` 的 `replay`/`fleet`/`linkplane`(重写为经标准接口) |
+| Backend 平台部分 | `salasim/` |
+| Backend `topology_clock_service`、`scenario_compiler`、`walker_*`、故障规划、`v3_statistics` 切片部分 | `salasim_sim/` |
+| Backend `v3_statistics` 摄取部分、`telemetry_consumer` | `salasim_core_history/` |
+| YANG `salasim-simulation/fault/fleet/pce-run/pce-fleet/profile/analytics/run-config` | `salasim-yang-sim` 或删除 |
 
-## 5. 与改造阶段的对应
+## 5. 实施阶段(每阶段单独确认)
 
-| 阶段 | 在本文结构中的落点 |
-|---|---|
-| P0 契约 | 接触计划 YANG、链路状态报告、事实载荷契约;**同时落地 F4–F6 防回潮检查与 CI 骨架(§3.6)** |
-| P1 | PCE:`PceContext` 取代 `SimRegistry`;拆出 `pce-model` |
-| P2 | `pce-plan`、注入时钟、重试节奏改毫秒/拓扑版本;故障直接作用于链路状态 |
-| P3 | `pce-facts` + 平台 `ingest/`:`network_id`/代际;与 Backend 摄取同步切换 |
-| P4 | Emulator 缩 `mgmt`、恢复软状态、接口标识来自节点配置、链路属性配置路径 |
-| P5 | Controller 瘦身;YANG 拆工件 |
-| P6 | `salasim_gmpls_sim`:回放器、编译器、结果;Backend 拆分 |
-| P7 | 旧码点、旧 RPC、旧配置清理 |
+**规则**:阶段内"先建新路径 → 用参考场景跑通 → 切换 → 同一变更集删旧路径"(与 2026-10-06 R1 一致,不保留双路径);任何阶段结束时,参考场景都必须能端到端运行。
 
-与既有计划的关系:`architecture-evolution-design.md` 的 W1(Java 25)、W2(锁与并发)、W4(JetStream/Postgres)可与上述阶段并行或穿插(W2 的 S1/S2 与 P1/P2 天然合并);W3 的"时钟不暂停"在本架构里自然成立(核心没有仿真时钟);W5 的 OSPF-TE 经由设备层实现;W6 的控制器化即本文的核心形态。冲突处以本文与 `control-system-architecture.md` 为准。
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| **P0 契约 + CI** | 接触计划 YANG(先评估 TVR)、链路状态报告、事实载荷契约、介质契约、`core_api_v1` 草案;CI 骨架;F1–F10 基线 | 契约评审通过;棘轮检查在 CI 运行 |
+| **P1 PCE 装配** | `PceContext` 取代 `SimRegistry`;包级重组;RFC 8232 恢复 | 无外部输入能启动;重启后状态同步回来 |
+| **P2 PCE 时间与计划** | 注入 `Clock`;重试改毫秒/拓扑版本;`pce.plan` 只做预测并对账;TED 只由实际报告更新 | 无头确定性测试覆盖计划对账 |
+| **M1 端到端骨架** | 最小链路平面(逻辑载波)+ Emulator `node-port` 最小版 + 回放脚本:一条链路故障 → 运行 down → YANG-push → PNC → PCE 重路由 → 事实入库 → 窗口结果 | 验证 P0 契约够用;实测 YANG-push 通告时延与量 |
+| **P3 遥测与历史** | `network_id`/代际;`salasim_core_history` 摄取 + `core_api_v1`;与 Backend 同步切换 | 对等验证:录制事实回放后统计一致 |
+| **P4 设备** | `node-port` 完整版;RSVP 软状态 + RFC 2961;接口来自节点配置;删除 `NodeSimClock` 与仿真 applier | 卫星拓扑变化全量走链路平面的规模实测 |
+| **P5 控制器 + YANG** | 删 `run/fleet/fault`;接触计划存储;意图/状态投影;YANG 拆两个工件;lighty 闸门(§6) | F4/F5 基线显著下降 |
+| **P6 sim 模块** | 回放器、编译器、节点编排、结果与保真度;Backend 包拆分完成 | 确定性回归 + 保真度检验进入夜间 |
+| **P7 线上清理** | 删 TLV 65510 系列、通知类型 33、旧 RPC | F4/F9 基线归零 |
 
-## 6. 未验证与风险
+与 `architecture-evolution-design.md` 的关系:W1(Java 25)、W2(锁与并发,与 P1/P2 合并)、W4(JetStream/Postgres,与 P3 合并)继续有效;W3、W5、W6 中与本文冲突的部分已在该文头部标注取代。
 
-- 本文为设计,未实现、未验证;各仓库的内部结构只核对到盘点所见的深度(尤其 **前端内部结构、Backend 内部模块依赖** 未逐文件核对)。
-- 拆分 PCE 为多模块是大工程(仿真耦合在约 55 个主文件和 117 个测试文件里);建议先在**包级别**按模块边界整理并用 ArchUnit 约束,再决定是否拆成独立 Maven 模块。
-- 契约测试和适应度函数需要先有 CI 载体,而目前大部分仓库没有 CI。
-- 两个新仓库(`sim`、`platform`)会增加协调成本;如果团队规模小,可先以 backend 仓库内的独立顶层包起步,稳定后再拆仓库(依赖规则与适应度函数不变)。
-- 破坏性点(YANG 工件拆分、PCEP 码点、遥测契约、`run_id` → `network_id`)只在本地分支做,不影响 169 上运行中的任务;任何推送/部署另行确认。
+## 6. 待决项与风险
 
-## 7. 需要你决定
+| 项 | 说明 | 处理 |
+|---|---|---|
+| lighty.io 闸门 | 在 Java 25 上能否运行未验证(W6-N0) | P5 前必须通过;不通过则控制器先跑 Java 21 |
+| 存储:列式导出 | 测试床结束后导出原始事实到对象存储 | 写核心 DDL 前决定;规模与成本未验证 |
+| 全量拓扑变化走设备的规模 | 大星座下 YANG-push 通告量与时延 | M1 与 P4 实测;若不可行需重新讨论 D9 的执行方式 |
+| TVR 草案状态 | IETF TVR 调度模型是否可用 | P0 先查 |
+| 保真度阈值 θ | 需真实运行数据标定 | P6 |
+| CI 托管方式 | 托管或自建 | P0 前 |
+| PCE 拆分规模 | 仿真耦合约 55 个主文件、117 个测试文件 | 包级先行 |
+| 前端与 Backend 内部依赖 | 未逐文件核对 | 迁移前盘点 |
+| 破坏性点 | YANG 工件拆分、码点、遥测契约、`run_id`→`network_id` | 只在本地分支;推送/部署另行确认 |
 
-1. **sim 仓库时机**:建议 P6 之前先以 backend 仓库内的独立顶层包起步,P6 时再拆成 `salasim_gmpls_sim`(降低早期协调成本);或现在就建新仓库。
-2. **PCE 拆分粒度**:建议先包级整理 + ArchUnit,P2 之后再视收益拆 Maven 模块;或一步到位拆模块。
-3. **CI 先行**:建议在 P0 同时搭 CI 骨架并上线 F4–F6 检查(防止清理期间仿真概念回潮);确认由哪种 CI(托管/自建)承载。
-4. **文档目录重整**时机:建议 P0 前单独做一次(只移动与加头部,不改内容)。
-5. **遗留包名 `es.tid.*`**:建议不做整体改名,新模块用 `net.salasim.*`。
-6. **前端**:迁移前先做一次前端内部结构盘点(与本次后端盘点同方法)。
+**暂缓**:平台账本/计费服务(只保留已验证的 DDL 与测试);PCE Maven 模块拆分;新建仓库。

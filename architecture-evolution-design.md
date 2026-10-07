@@ -1,6 +1,21 @@
 # SALASIM-GMPLS 架构演进总体设计文档
 
 > **从属关系（2026-10-06）**：本文件降为 `commercial-architecture.md`（总纲）的子计划，保留 W1–W7 的技术细节。"不写 Operator"、"run 编排用 Temporal"已被总纲 D-C2、D-C3 取代；冲突时以总纲为准，见总纲 §16。
+>
+> **被分层原则取代（2026-10-08）**：设备层和管控核心不感知仿真（`control-system-architecture.md` v2、`system-architecture.md` v2）。下列内容**不再执行**，以右列为准：
+>
+> | 本文内容 | 取代为 |
+> |---|---|
+> | §1 时钟不变量 I1–I3、`ClockAnchor`；W3 的 `ClockAnchor` 守护测试 | 核心没有仿真时钟；会话固定加速比、不可暂停（control D10） |
+> | W3 时间表预下发给 PCE、PCE 按自己的时钟换帧；故障带生效仿真时刻提前下发给节点 | 接触计划（UTC）只用于预测式算路；实际拓扑变化与故障由链路平面产生，经设备上报（control D8、D9） |
+> | W1-C 用 Scoped Values 承载 run epoch | 用网络代际/拓扑版本做栅栏（system §4.1 规则 4） |
+> | §2/W5 开启 OSPF 的 run 由核心预检 speedup=1（`simulation.v1.yaml` 409） | sim 侧会话校验（control §3.4） |
+> | W5 故障经 NETCONF `enabled=false` 下发、经 `SimulationFaultRegistry` 生效；帧切换不走 OSPF | 链路平面改载波，设备检测运行 down；`SimulationFaultRegistry` 删除；OSPF-TE 为可选高保真模式 |
+> | W5 逐链路隧道作为前提 | 默认逻辑载波，隧道 + netem 仅用于可选高保真模式 |
+> | W6 `salasim-simulation`、`salasim-fault` 等模块进核心 YANG | 移入 `salasim-yang-sim` 工件或删除；控制器不含 run/时钟 RPC |
+> | W6-N5 run 编排收进控制器 | run（会话）编排属于平台 sim 模块的回放器 |
+>
+> W1（Java 25）、W2（锁与并发）、W4（JetStream/Postgres）、W7 中与上表不冲突的部分继续有效。
 
 > 状态：设计已批准（2026-10-02）。各工作流分阶段实施，每一阶段开工前单独确认。
 
