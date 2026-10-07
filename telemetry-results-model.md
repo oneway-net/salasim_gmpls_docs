@@ -343,3 +343,31 @@ CREATE TABLE stats.slice_document (
 7. **前端**:服务/隧道表改为分页请求;新增跨 run 对比页;分桶的百分位改显近似值(带"≈"与说明)。**其余页面不变**。
 
 **对估算的影响**:在第 12 节的约 50–75 天之上加 UI/API 部分(分页表、对比页、两个新接口,前后端合计估 8–12 天,±50%),**I2 合计约 58–87 天**。不做任何一部分都可以回到更小的范围,但你选的是"一次到位"。
+
+## 14. G1 第一阶段结果:可用性区间化的对拍(2026-10-07)
+
+**做了什么**:`salasim_backend/availability_intervals.py`——区间推导的原型(纯函数,不碰数据库):由一个服务的原始账本事实**按序推出它(及它的每条隧道)处于各状态的区间**,每个切片的 `observationMs`/`unavailableMs` 是区间与切片窗口的**交集**,累计量是**前缀和**,没有跨切片接力的游标。覆盖的范围就是独立审计 `availability_replay` 支持的契约:PCE 确认的转发状态、sim 时钟、无退役、一个转发方向的主隧道 + 可选备用隧道。它读和审计**同样的原始事实**,但**不共用任何代码**,所以两边一致是证据,不是恒等。
+
+**两个对拍标准,都通过:**
+
+| 对拍对象 | 测试 | 结果 |
+|---|---|---|
+| 独立审计 `availability_replay` | `tests/test_availability_intervals_parity.py`:4 个手写边界用例(跨切片中断、同毫秒的不同事实、视界之后/起点之前的事实、备用接管)+ **40 × 100 = 4000 个随机场景**(1–3 个服务、单隧道或主备、随机 UP/DOWN/INTENDED/FAILED/REMOVED、随机中断区间与选择变更,时间覆盖起点之前到视界之后);审计自己被要求确认区间算出的每服务/每隧道/每切片的切片值与累计值与层聚合 | **4004 个全部 MATCH** |
+| 生产的归约器(`get_slice`) | `tests/test_availability_intervals_vs_production.py`:事实**真的经过 store 摄入、封账**,再比较发布出来的每服务/每隧道/每切片;1 个手写的"主故障、备用接管"用例 + **6 种子 × 20 个随机历史** | **全部相等**(store 拒绝的无效历史被跳过,并要求至少 15/20 被接受) |
+
+**突变检查**:对区间推导做 3 种破坏(忽略 `REMOVED`、忽略选择事实、改动 DOWN 判定),审计对拍 40/41 个失败;对推导的窗口裁剪做一处破坏,生产对拍 7 个全部失败。随机场景确实覆盖了非平凡情形:400 个里 143 个有不可用时间、213 个有被观测的隧道、290 个有备用隧道。
+
+**对拍发现并核对了一处语义差异**(这就是做对拍的意义):
+- 审计把"选择事实的 `selectedTunnelId` 为 `null`"一律当作"取消选择"。**生产只在它能认出事实涉及的是本服务的某条隧道时才算**:`by_tunnel.get(selected or previousSelectedTunnelId)`,认不出就丢弃(注释:"Missing selection evidence cannot establish forwarding")。所以一个**没有 `previousSelectedTunnelId` 的 `null` 选择**,审计会让服务进入不可用,生产会**忽略**它。真实的 PCE 会带上 `previousSelectedTunnelId`,所以这个差异在真实数据里不出现;但区间推导**采用了生产的规则**(它要取代生产),审计的随机事实相应地带了 `previousSelectedTunnelId`。**这个差异也说明审计和生产在边界上并不完全等价,"以审计为标准"需要补一句"以审计加生产的差异清单为标准"。**
+- 另外**生产的摄入校验**比我想的严:`availabilityImpact.stateEffectiveSimulationTimeMs` 必须等于隧道事实的 `stateEffectiveSimulationTimeMs`(INTERRUPTED 也一样),INTERRUPTED/PERSISTENT_DOWN 必须带 `unavailableFromAt`(墙钟),INTERRUPTED 还要 `restoredAt ≥ unavailableFromAt`。区间推导按**已通过校验的事实**工作,校验仍由摄入层负责。
+
+**还没做(下一阶段,每一项都要同样的对拍)**——区间推导目前**只覆盖审计的契约**,生产的归约器还有:
+1. **降级状态**(`DEGRADED`、`protection_degraded`、`degradedMs`、`protectionHealthyMs`、保护健康百分比);审计不比较这些,只能以生产为标准。
+2. **服务退役**(`stopped_at`)和生命周期(`lifetime.enabled`)。
+3. **故障窗口并入**(`severed_hops`、`_PATH_SEVERED`/`_PATH_REJOINED`,规划/预测的故障窗口)——这是历史 run 才用到的策略,新 run 用 PCE 确认;**是否保留要问**。
+4. **两个时间基准**(`WALL` 与 `SIM`)与墙钟投影(`wall_to_sim`/`plan_to_sim`)。
+5. **多方向、共享隧道**(审计明确不支持)。
+6. **事件计数**:`interruption_events`、`degradation_events`、`switchovers`、`path_switches`、`maxPathSwitches`。
+7. **迟到事实重开切片**的行为(`updatePending`)与"证据不完整就停止累计"。
+**原则不变:G1 不留退路,逐项对拍通过才换。** 其中第 3 项(故障窗口并入)是风险最大的一块,**建议先问:新 run 是否还需要它**——如果产品上只保留 PCE 确认策略,可以把它从区间模型里**整体拿掉**,而不是去复刻 `_path_severance_windows` 的全部逻辑。
+
