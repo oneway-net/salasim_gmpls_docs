@@ -433,3 +433,25 @@ CREATE TABLE stats.slice_document (
 **声明的差异**:`complete` 在区间模型里**恒为 true**。生产需要这个标志,是因为它靠"游标接力"——上一切片缺失就会断链,要标记累计不完整;区间模型的累计由区间直接求和,不依赖上一切片,所以不存在"不完整"的状态。字段保留以维持文档形状,`fromSnapshotIndex` 取服务的登记切片。
 
 **还没做**:多方向与共享隧道(要先问你双向服务的可用性是否仍需要)、隧道层 `pathSwitches` / `switchedTunnelCount` / `maxPathSwitches`(需要 ERO 路径)、迟到事实(`updatePending`)下的局部重放;服务登记表边界还用到 `requested_start_time` / `admitted_sim_time`(测试环境里为 NULL,未覆盖)。
+
+## 18. G2 第一阶段:指标清单的机械导出与"拆开再装回"的黄金测试(2026-10-07)
+
+**先量了现有文档(不是猜的)**:`get_slice` 在整套后端测试里产出 **1073 份不同的 COMPLETE 切片文档**(24 MB);按路径模板去重后共 **1628 个叶子模板**:数值 1355、字符串 89、布尔 73、空对象 51、null 35、列表 25。最小的一份文档就有 659 个叶子。**结论:文档比第 6 节"约 100 个指标"想象的大得多、也不规整**——数据决定键的映射(操作类型、原因、状态、窗口大小、`byKind.<kind>.byResult.<r>`…)、域结果(`domainResults.<pce>`)重复了整套顶层字段、还有一批标志位和说明字符串。
+
+**做法**:`src/salasim_backend/slice_decomposition.py`
+- `decompose(doc)` → **measures** + **residual**。凡是**不在列表里的数值叶子**都成为一行 `(scope, code, dims, value)`:`scope` = `'*'`(顶层)或 PCE 标识(`domainResults.<pce>` 下);`code` = 叶子路径,其中**数据决定键的映射**(`DYNAMIC_PARENTS`,44 条路径模板,逐一对照语料核过)的键换成 `*` 并移到 `dims`。residual = 去掉这些叶子后的文档(标志、字符串、null、列表)。
+- `assemble(measures, residual)` 装回。`metric_registry.json` 里每个 code 带 `integral`(语料里全是整数 → 装回为 int,保证 `2` 与 `2.0` 的 JSON 文本不混)、出现的 scope、维度个数。
+
+**结果**:**1073 个叶子模板里的数值叶子折成 428 个指标**(93 个全局+域共有、其余只在全局或只在域)。装回与原文档**逐字段相等,1073/1073**。
+
+**黄金测试(G2)的形态**:不是单独一个测试,而是 `tests/conftest.py` 里一个**始终开启**的钩子——**整个测试套件里任何一次 `get_slice` 产出 COMPLETE 文档,都当场拆开、(数值经过 `float`,模拟 double 列)再装回,必须与原文档相等**,并且**每个数值叶子的 code 必须在注册表里**。所以 43 个契约场景和其它所有读切片的测试(共 2368 个)都是黄金测试的输入,**新字段不登记注册表就会让第一个产出它的测试失败**(与前端 `TREND_FIELD_KINDS` "没声明就报错"同一个做法)。**突变检查**(删一条动态映射、值加一、列表被清空、去掉 integral 还原)均被抓到;其中最后一个一开始**没被抓到**——因为内存里值本来就是 int,只有经过 `float` 才暴露,所以钩子现在走 `float`。
+
+**发现并如实记录**:
+- 同一个指标在不同文档里**有时是 int 有时是 float**(例如 `0` 与 `0.0`),所以 `integral` 只在"语料里从未出现过 float"时为真;其余指标装回后数值相等、JSON 文本可能是 `5.0` 而不是 `5`(前端无影响;若要字节级一致,构建器需要按指标固定类型)。
+- 文档里仍有 `tunnelAvailability.faultWindowIntegration` 之类的字段——**故障窗口并入已按你的决定不做**,这个字段是旧输出的一部分,新装配器是否保留要在做新构建器时定。
+- 键里带 `/` 的映射键(目前语料中没有)原样留在 residual,不编码进 code。
+
+**还没做**(下一步,按顺序):
+1. **residual 里的列表搬家**:`serviceAvailability.byService[]`、`tunnelAvailability.byTunnel[]`(已有区间推导,先接上)、`links.diagnosticLinks[]`、`signalingBacklog.pces[]`、`inputs.pces[]` 等 25 个列表模板 → `entity_slice` / `link_diag` / `reason_object`;列表里的数值(约一半的叶子)才算真正进入窄表。
+2. **注册表的语义属性**:现在只有 `integral`/`scopes`/`dims`。`kind`/`reduce`/权重/分子分母**只有前端 `TREND_FIELD_KINDS` 里约 300 个趋势字段有声明**(且是趋势字段名,不是文档路径)——要从 `trend-rows.mjs` 拿"趋势字段 ← 文档路径"的对应,才能机械导出;单位目前**没有任何来源**,不靠后缀猜。
+3. **构建器**:从事实直接写 `measure`/`dist`(取代 `_build_slice_result`);届时同一个黄金钩子对**新构建器的输出**再验一遍(装配结果必须等于旧 `get_slice`)。
