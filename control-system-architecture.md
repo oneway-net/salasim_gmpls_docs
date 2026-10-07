@@ -62,6 +62,17 @@
 | `ana.window_snapshot`、切片/窗口统计 | `sim.result_*` | 属于 L2,按场景窗口算 |
 | `exp.create_run_partitions / drop_run` | `core.partition_policy` | 见 §5 |
 
+## 2.4 仿真时间与 UTC 的映射(用户已确认:事实多带墙钟时间戳)
+
+**核心只存 UTC;仿真时间只在 `sim` 层换算。**
+
+1. **分段线性时钟** `sim.clock_segment(session_id, seq, wall_from, wall_to, sim_from, speedup, cause)`:操作员的 Start / Pause / Resume / 改加速比各追加一段;暂停是 `speedup = 0`;`sim(t) = sim_from + (t − wall_from) × speedup`;同一 session 的段在墙钟上用排他约束保证不重叠。仿真换 UTC 时,暂停段上取暂停开始的那一刻。
+2. **实测采样** `sim.clock_sample(session_id, wall_at, sim_ms, observer)`:名义速率只用于**计划**(把故障计划的仿真时刻换成预期 UTC);**还原**事实发生时的仿真时间,用相邻采样点线性插值。计划与实际的差 = 控制面反应时延。
+3. **事实自带的时钟对**:调研结果(PCE 仓库,2026-10-07)—— PCE 的事实已经同时带 `occurredAt`(墙钟,ISO-8601 Instant)和 `simulationTimeMs`(仿真时钟):`TunnelUpdateEmitter`(4 处)、`FaultImpactEmitter`、`PceWebhookSender.stampV3`(`putIfAbsent`,兜底盖戳)。所以**每条事实本身就是一个时钟采样点**(`occurredAt`, `simulationTimeMs`),ingest 可以直接据此写 `sim.clock_sample`,不需要 PCE 额外上报。
+4. **PCE 侧需要改的只有一致性**:`occurredAt` 的含义必须统一为"事实在观察者处发生的时刻"。现状各发射点取法不一:有的是创建时 `Instant.now()`(`ProtectionGroupRegistry`、`CrossSnapshotWindowEmitter`、`TunnelUpdateEmitter:128`),有的是完成时刻(`TunnelUpdateEmitter:430`、`FaultImpactEmitter` 用 `confirmedWallMs`),带宽快照用冻结时刻(`LinkBandwidthSnapshotEmitter`)。需逐个核对并写进载荷契约;`stampV3` 的兜底盖戳是入队时刻,晚于事实发生,只能当上界。
+5. **Emulator**:它不直接向 Backend 发遥测;其事实经 PCEP 报告(PCRpt)到达 PCE,PCE 盖的是**接收时刻**,不是节点的时刻。节点自己的时间戳应走 NETCONF 通知的 `eventTime`(RFC 5277,标准字段,与已定的"故障经 NETCONF 通知"一致),观察者记为 `agent:`;不为此扩展 PCEP。节点时钟与 PCE 用 chrony 同步。在节点代理就绪前,Emulator 相关事实以 PCE 接收时刻为 `occurred_at` 的近似,并在 `observer`/`attrs` 里标明 `time_source=pce_received`。
+6. **入库字段**:核心事实表 `occurred_at`(观察者墙钟)、`received_at`(控制器入库时刻)、`time_source`(`observer` | `pce_received` | `ingest`);查询时用事件 × 时钟分段的视图补出 `sim_ms`。
+
 ## 3. L2 仿真附加层
 
 仿真层回答"这次测试是怎么设定的、结果怎么采的",不回答"网络是什么状态"。
