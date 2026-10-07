@@ -11,7 +11,7 @@
 | 事实载荷契约 | `salasim_gmpls_yang/salasim/salasim-fact.yang` | 完成(信封 + `link-oper-change`、`plan-deviation` 两种体) |
 | 介质契约 | `salasim_gmpls_yang/salasim/salasim-medium.yang` | 完成(含传输规范) |
 | 模块归属 | `salasim_gmpls_yang/module-classes.txt` | 完成;`validate.sh` 检查每个模块都已归类 |
-| 接触计划 | `ietf-tvr-topology` + 薄 augment | **阻塞**:需要先引入 TVR 与 RFC 9922 模块文件(§3) |
+| 接触计划 | 引入 `ietf-tvr-*`(draft-12)、`ietf-schedule`(RFC 9922)+ `ietf-system`、`iana-crypt-hash`;`salasim_gmpls_yang/salasim/salasim-contact-plan.yang` | 完成(yang df3c2d4),制品 66 个模块 |
 | `core_api_v1` 草案 | `docs/core-api-v1.md` | 完成(草案,P3 定稿) |
 | 适应度函数棘轮 | `docs/tools/fitness/`(`fitness.py`、`baseline.json`、`test_fitness.py`) | 完成;接入 `tools/check-all.sh fitness` |
 | CI 托管 | — | **待定**(§5) |
@@ -51,7 +51,7 @@
   1. 计划版本与整体替换语义(`plan-version`;安装新计划 = 原子替换,预测式算路键为 `(schedule-id, plan-version)`)。
   2. 对账容差(`late`/`early` 判定窗口),偏差本身用 `salasim-fact` 的 `plan-deviation` 体。
 - 取代 `salasim-sat-topology`(帧号、仿真时间窗)。
-- **阻塞**:沙箱不能访问 ietf.org / rfc-editor.org,模块文件要逐字节引入并在 `modules.lock` 记哈希,不能凭转述重写。需要的文件:`ietf-tvr-schedule`、`ietf-tvr-topology`(`ietf-tvr-node` 可选)、RFC 9922 `ietf-schedule`。引入后写 augment 并验证。
+- **已引入**(2026-10-08,用户下载文档文本):模块从文档文本的代码块提取(去页眉页脚与缩进),来源文本的 sha256 与说明记在 `modules.lock`;`ietf-schedule` 依赖 `ietf-system`(RFC 7317)与 `iana-crypt-hash`,从已固定的 YangModels 提交取得。`salasim-contact-plan` 只含 `plan-version`、`early-tolerance`、`late-tolerance`,挂在 TVR 网络上。
 - 风险:草案在 RFC 发布前仍可能改修订日期;发布后按 RFC 版本替换(修订号严格递增)。
 
 ## 4. 适应度函数基线(2026-10-08 记录)
