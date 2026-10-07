@@ -53,7 +53,7 @@
 | 对象 | 标准参照 | 说明 |
 |---|---|---|
 | 节点、端口、链路、TE 属性 | ietf-network、ietf-te-topology | 实际拓扑以设备上报为准(§2.4) |
-| 接触计划(预测的拓扑变化) | IETF TVR 调度模型(草案,待评估) | 预测,不是事实;见 §2.4 |
+| 接触计划(预测的拓扑变化) | IETF TVR `ietf-tvr-topology`(RFC Editor 队列;P0 采用,见 `p0-contracts.md` §3) | 预测,不是事实;见 §2.4 |
 | LSP、路径、保护 | ietf-te(意图)、ietf-pcep LSP-DB(状态) | 意图与状态分离,见 §2.3 |
 | PCEP 会话、路径事务 | RFC 8231/8281/8232 | 一次路径操作 = 一个事务:触发/开始/结束时刻和结果 |
 | 性能 | ietf-te-topology PM | 计数器带 epoch(重启);差值在视图里算 |
@@ -85,7 +85,7 @@
 - **实际拓扑以设备为准**。链路通断由设备端口检测(载波)→ 接口运行状态 → YANG-push → PNC 生成链路状态报告(`network-id` + 代际 + `last-change`)→ PCE 更新 TED。卫星链路的建立与拆除也走这条路。
 - **接触计划只是预测**。PCE 用它对未来时刻的拓扑提前算路(预测式路由,键为 `(plan-entry-id, plan-version)`,请求用 UTC 时刻)。到了计划时刻**不直接改 TED**,而是等实际状态到达后,把预计算结果作为候选应用。
 - **对账**:实际变化与计划不一致(提前、延后、未发生、计划外)时,发出 `plan-deviation` 事实,以实际为准。计划外的变化就是故障。
-- 接触计划的 YANG 在 P0 先评估 IETF TVR 工作组的调度模型草案,能用就作为基础,不能用再写 `salasim-*` 模块并说明理由。
+- 接触计划的 YANG:P0 评估后采用 IETF TVR `ietf-tvr-topology`,只为计划版本/替换语义与对账容差加薄 augment `salasim-contact-plan`(`p0-contracts.md` §3)。
 - **规模风险(待实测)**:大星座每次拓扑变化都要经设备 → YANG-push → PNC → PCE,通告量和时延要在 M1 里程碑与 P4 实测。
 
 ### 2.5 重启与恢复

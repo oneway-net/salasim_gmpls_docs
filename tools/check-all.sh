@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# One entry point for "is the platform consistent?": YANG validation and the unit tests of every repository.
+# One entry point for "is the platform consistent?": architecture fitness ratchets, YANG validation and the unit tests
+# of every repository.
 # Exit code 0 = everything run passed; it is the command a CI job runs.
 #
 #   tools/check-all.sh                 run every check
 #   tools/check-all.sh yang pce        run only the named checks
 #   SMOKES=1 tools/check-all.sh        also run the controller smoke scripts (need loopback sockets)
 #
-# Checks: yang, netconf, emulator, pce, controller, backend, frontend.
+# Checks: fitness (F1-F10 ratchets, tools/fitness), yang, netconf, emulator, pce, controller, backend, frontend.
 # Environment: WORKSPACE (default: the parent of this repo), PYANG (default: the yang-bootstrap venv's pyang, then PATH),
 #              JAVA_HOME (default: JDK 25 from Homebrew if present), MVN_FLAGS (default "-o -q"), PYTEST (default "python3 -m pytest").
 set -u
@@ -22,7 +23,7 @@ if [ -z "${PYANG:-}" ]; then
 fi
 export PYANG
 
-all="yang netconf emulator pce controller backend frontend"
+all="fitness yang netconf emulator pce controller backend frontend"
 selected="${*:-$all}"
 failed=""
 passed=""
@@ -43,6 +44,7 @@ run() {
 
 for c in $selected; do
   case "$c" in
+    fitness)    run fitness "$here/tools/fitness" sh -c "python3 -m unittest -q test_fitness && WORKSPACE=\"$WORKSPACE\" python3 fitness.py" ;;
     yang)       run yang "$WORKSPACE/salasim_gmpls_yang" ./validate.sh ;;
     netconf)    run netconf "$WORKSPACE/salasim_gmpls_netconf" mvn $MVN_FLAGS test ;;
     emulator)   run emulator "$WORKSPACE/salasim_gmpls_emulator" mvn $MVN_FLAGS test ;;

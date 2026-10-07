@@ -100,7 +100,7 @@
 | 接口 | 两端 | 协议/模型 | 契约来源 | 拥有者 |
 |---|---|---|---|---|
 | 北向 | 用户/平台/sim ↔ 控制器 | RESTCONF + `ietf-te` + `salasim-service` | 核心 YANG | 核心 |
-| 接触计划 | 计划源(轨道预测/回放器)↔ 控制器 | RESTCONF;TVR 调度模型或 `salasim-*`(P0 评估) | 核心 YANG | 核心 |
+| 接触计划 | 计划源(轨道预测/回放器)↔ 控制器 | RESTCONF;`ietf-tvr-topology` + `salasim-contact-plan`(P0 决定) | 核心 YANG | 核心 |
 | 平台 API | 前端 ↔ 平台服务 | REST(OpenAPI) | OpenAPI | 平台 |
 | MPI | MDSC ↔ PNC/PCE | NETCONF + YANG-push;抽象 te-topology | 核心 YANG | 核心 |
 | SBI 管理 | PNC ↔ 设备 | NETCONF:`ietf-interfaces`、链路属性、YANG-push | 核心 YANG | 核心/设备 |
@@ -330,7 +330,7 @@ salasim_sim/            仿真模块
 | lighty.io 闸门 | 在 Java 25 上能否运行未验证(W6-N0) | P5 前必须通过;不通过则控制器先跑 Java 21 |
 | 存储:列式导出 | 测试床结束后导出原始事实到对象存储 | 写核心 DDL 前决定;规模与成本未验证 |
 | 全量拓扑变化走设备的规模 | 大星座下 YANG-push 通告量与时延 | M1 与 P4 实测;若不可行需重新讨论 D9 的执行方式 |
-| TVR 草案状态 | IETF TVR 调度模型是否可用 | P0 先查 |
+| ~~TVR 草案状态~~ | 已定:draft-12 在 RFC Editor 队列,采用;模块文件待引入(`p0-contracts.md` §3) | P0 |
 | 保真度阈值 θ | 需真实运行数据标定 | P6 |
 | CI 托管方式 | 托管或自建 | P0 前 |
 | PCE 拆分规模 | 仿真耦合约 55 个主文件、117 个测试文件 | 包级先行 |

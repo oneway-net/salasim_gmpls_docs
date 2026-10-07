@@ -12,6 +12,8 @@
 | 4 | `platform-data-architecture.md` | 平台层表结构与已验证机制(分层与命名以 #1 为准) |
 | 5 | `network-native-database-design.md` | 核心事实表结构(键、时间轴、归属待按 #1 v2 重写) |
 | 6 | `simulation-awareness-inventory.md` | 现有代码中的仿真感知点清单(阶段表以 #3 为准) |
+| 3a | `p0-contracts.md` | P0 契约决策、适应度函数基线 |
+| 3b | `core-api-v1.md` | 核心只读历史视图契约(草案) |
 | 7 | `architecture-evolution-design.md` | W1 Java 25、W2 并发、W4 遥测等技术细节(头部列出被取代项) |
 
 ## 已被取代(保留,不再维护)
