@@ -82,7 +82,7 @@ CREATE TABLE stats.metric_def (
   dim_names   text[] NOT NULL DEFAULT '{}', -- 维度名,如 {'state'}、{'operation','outcome'}
   unit        text CHECK (unit IN ('count','ms','bps','pct','ratio','us')),  -- 可空:目前没有来源,不靠后缀猜
   kind        text CHECK (kind IN ('gauge','flow','ratio','stock','extremum')),          -- dist 指标靠 hist_bounds 非空识别,不另设 kind
-  reduce      text CHECK (reduce IN ('sum','mean','wmean','max','min','last')),  -- 可空 = 只在切片里展示,不参与跨切片/跨桶聚合
+  reduce      text CHECK (reduce IN ('sum','mean','wmean','max','min','last','recompute')),  -- 可空 = 只在切片里展示,不参与跨切片/跨桶聚合;recompute = 比率,由分子分母重算(第 22 节加入)
   weight_id   smallint REFERENCES stats.metric_def(metric_id),                    -- wmean 的权重指标
   numerator_id smallint REFERENCES stats.metric_def(metric_id),                   -- ratio:分子/分母指标,聚合时重算
   denominator_id smallint REFERENCES stats.metric_def(metric_id),
@@ -375,10 +375,10 @@ CREATE TABLE stats.slice_document (          -- 内容:只追加/整行替换,�
 | 区间化的退路 | **不接受**:对拍(`availability_replay.py`)必须通过,没有"退回扫描算法"的备选 |
 
 **这些决定带来的具体工作**(在 I2 的结果层里,按顺序):
-1. `metric_def` 注册表 + 从 `_build_slice_result` 与 `trend-rows.mjs` 机械导出指标清单(含"每条 UI 字段路径都对应一个 `metric_id`"的测试)。**进度**:清单 428 个指标与常开测试已完成(第 18 节);语义属性(`kind`/`reduce`/权重/分子分母)待从 `trend-rows.mjs` 导出,`unit` 无来源、保持可空。
+1. `metric_def` 注册表 + 从 `_build_slice_result` 与 `trend-rows.mjs` 机械导出指标清单(含"每条 UI 字段路径都对应一个 `metric_id`"的测试)。**进度**:清单与常开测试完成(第 18 节);**语义属性已机械导出**(第 22.2 节:138 个有 `kind`/`reduce`,339 个仅展示,13 个分布,19 个无法确定);`unit` 无来源、保持可空。
 2. `entity_interval` + 实体局部重放的推导器,**以 `availability_replay.py` 对拍通过为合入条件**(G1)。**进度**:G1 完成(第 1–5 阶段,第 21 节)。
 3. `measure`/`dist`/`entity_slice`/`reason_object`/`link_diag`/`link_event` 的构建器(切片封账事务);`run_measure`、`service_result`、`fault_result*` 的物化。
-4. `slice_state` + `slice_document` 装配器(数据驱动的字段路径表;全局文档封账时写,域文档按需)+ **与现有 `get_slice` 逐字段相等的黄金测试**(G2)。**进度**:拆开再装回的第一阶段完成;下一步把 residual 里的 25 个列表搬到 `entity_slice`/`link_diag`/`reason_object`。
+4. `slice_state` + `slice_document` 装配器(数据驱动的字段路径表;全局文档封账时写,域文档按需)+ **与现有 `get_slice` 逐字段相等的黄金测试**(G2)。**进度**:拆开再装回的第一阶段完成;**列表已搬家**(第 22.1 节);下一步是构建器。
 5. 物理链路可用性的写时物化 + 故障确认 bump 修订号(G5)。
 6. **新增 API**(UI 范围的直接后果):
    - `GET /api/v3/runs/{run}/entities?kind=service|tunnel&slice=&state=&q=&sort=&page=&page_size=`:服务端分页/排序/过滤(来自 `entity_slice`);切片文档里的 `byService`/`byTunnel` 数组**在 SUMMARY 投影里不再带**(现有 `slice_list_summary` 已经在 SUMMARY 里丢掉它们,这里把"完整数组"也改为按需)。
@@ -581,3 +581,40 @@ G1 的最后三项。**对拍对象一律是生产的 `get_slice`**(独立审计
 **对拍**(`tests/test_availability_intervals_vs_production.py`,生产对拍的场景改造为):svc-2 是**双向服务**(正向与反向各一对主备、各有自己的保护组与选择),路径随机取自 3 条 ERO,所有对比字段不变并增加 `pathSwitches`(切片、累计、聚合)。12 种子 × 25 + 迟到 8 种子 × 20;被 store 接受的场景全部相等。覆盖是真的:150 个场景里 208 个切片有路径切换、52 个有倒换;迟到重建在 80 个场景里 **37 个改变了已发布的数字**(不是对着没变的结果比)。**突变检查(5 种,全被抓到)**:所有腿按 forward 处理、非 ACTIVE 也算路径安装、首次安装算一次切换、选择不分方向、被中断更新的路径按中断起点而非恢复时刻安装。后端全量 2379 通过。
 
 **G1 现在做完了**:区间模型覆盖生产归约器的全部语义(除已决定不要的:故障窗口并入、墙钟基准、证据完整性)。**没覆盖**:一条隧道被多个服务绑定(未核实注册表是否允许,生产的归约也没有为此写特例)。下一步是 G2:把 `residual` 里的列表搬进表、语义属性、构建者。
+
+## 22. G2 第二阶段:列表搬家与语义属性(2026-10-07)
+
+### 22.1 列表搬进窄表
+
+第 18 节的"残留"里有 25 个列表模板。现在 `decompose` 把**对象列表**当作**行列表**:元素里的每个数值叶子也是一行 `Measure`,带该元素的 `ordinal`(列表里的位置);残留里保留元素去掉数值后的骨架,所以**顺序与所有非数值字段原样保留**,装回逐字段相等。行列表只在"固定位置、不在数据决定键的映射下、不嵌在另一个行列表里"时成立,其余列表(字符串列表、`missingRanges` 这类嵌套的)原样留在残留。
+
+`LIST_TABLES` 写明归属,并有测试(`test_every_row_list_has_a_table_or_is_listed_as_unassigned`)让"还没归属的"始终可见:
+
+| 行列表 | 去向 | 数值叶子 |
+|---|---|---|
+| `serviceAvailability/byService`、`tunnelAvailability/byTunnel` | `entity_slice` | 38 |
+| `links/diagnosticLinks` | `link_diag` | 3 |
+| `tunnels/failureReasons/byTunnel`、`services/degradationReasons/byService` | `reason_object` | 0(元素里只有字符串) |
+| `inputs/pces`、`signalingBacklog/pces` | **未归属**(每 PCE 一块) | 40 |
+
+**结果**:注册表 428 → 509 个 code(+81 个单元格叶子);**原有 428 个普通指标一个没变**;黄金钩子在全部 2385 个测试上通过。两个未归属的每-PCE 列表要在构建器里决定:是以 PCE 为 `scope` 的 `measure`,还是各自一张表(注意域结果里同一份数据还会再出现一次,见 `domainResults.<pce>.signalingBacklog.pces`)。**元素的顺序在语料里并非总是按键排序**(`inputs/pces` 1984/1988、`signalingBacklog/pces` 3976/3980、`diagnosticLinks` 12/3981),所以 `ordinal` 暂时是必要的;`entity_slice`(1900/1900 按键排序)可以不存它,`link_diag` 已经有 `rank`。
+
+### 22.2 语义属性:用扰动法从前端导出
+
+`scripts/derive-metric-semantics.py` + `.mjs`:对每个 code 取最多 6 份真实文档,**把那一个叶子加 7**,用前端自己的 `buildTrendRows` 前后各算一遍,看哪些趋势字段变了、变了多少。**恰好让一个字段变了 7 的,就是它的直接来源**;其余(只是比率的输入、单位换算、什么都不影响)只报告,**不猜**。所以语义是机械导出的,不是我读代码推断的。
+
+| 结果 | 数量 | 处理 |
+|---|---|---|
+| 不影响任何趋势字段 | **339** | 仅展示,`kind`/`reduce` 为 NULL(与第 4 节"可空"一致) |
+| 直接来源 → 有 `kind`/`reduce` | **138** | flow/sum 92、stock/last 19、gauge/wmean 18、extremum/max 6、gauge/mean 2(前端的 `approximate`)、ratio/recompute 1 |
+| 分布(P50/P95,前端 `percentile`) | 13 | 不是标量指标,走 `dist`(第 6.2 节),`kind`/`reduce` NULL |
+| **无法确定** | **19** | 不猜,列在 `metric_semantics_report.json` |
+
+细节与发现:
+- **加权均值的权重按字段命名,按指标一份**:前端 `establishWaitingMs` 用 `establishWaitingSamples` 加权、`rerouteWaitingMs` 用 `rerouteWaitingSamples`,在注册表里是**同一个** `controlPlane/*/waiting/averageMs`,权重是 `controlPlane/*/…/sampleCount`(同样带操作维度)。当一个指标下所有字段的权重解析到同一个 code 时才算一致,6 个起初"不一致"的指标就是这样合并的;测试 `test_a_weight_has_the_same_dimensions_as_what_it_weighs_or_none` 钉住"权重的维度数与被加权的相同或为 0"。
+- **前端会用"存量"当权重**(`bandwidthCoveragePct` 用 `bandwidthEligibleLinkCount` 加权),所以"权重必须是 sum"不是规则,规则是"权重指标自己有 `kind`"。
+- **`reduce` 枚举新增 `recompute`**(比率:不能平均,要用求和后的分子分母重算),`CHECK` 已同步(第 4 节)。
+- **第 4 节的承诺"前端趋势读到的每个指标 `reduce` 非空"还没有达成**:13 个分布走 `dist`,**19 个无法确定**(比率的输入、Gbps 换算、`byReason/*` 的字符串键直方图等)才算兑现。这 19 个是下一步:逐个看前端怎么用,多数要么是派生字段(需要在 `metric_def` 里登记没有源叶子的派生指标),要么是前端字段的换算。**还有一个 `snapshotIndex` 被当成数值指标**——它是切片身份,不是度量,构建器应把它从指标里排除。
+- **局限**:扰动一个叶子看不出"只在 A 和 B 同时变时才有效"的联合依赖,所以"无影响"=**这 6 份文档里无影响**;`reduce` 为 NULL 的指标若日后出现在趋势里,前端 `requireKind` 仍会报错,不会悄悄画错。
+
+**还没做**:构建器本身(从事实直接写 `measure`/`dist`/`entity_slice`,取代 `_build_slice_result`)、两个每-PCE 列表的归属、19 个无法确定的指标、`unit` 的来源。
