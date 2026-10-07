@@ -362,12 +362,42 @@ CREATE TABLE stats.slice_document (
 - 另外**生产的摄入校验**比我想的严:`availabilityImpact.stateEffectiveSimulationTimeMs` 必须等于隧道事实的 `stateEffectiveSimulationTimeMs`(INTERRUPTED 也一样),INTERRUPTED/PERSISTENT_DOWN 必须带 `unavailableFromAt`(墙钟),INTERRUPTED 还要 `restoredAt ≥ unavailableFromAt`。区间推导按**已通过校验的事实**工作,校验仍由摄入层负责。
 
 **还没做(下一阶段,每一项都要同样的对拍)**——区间推导目前**只覆盖审计的契约**,生产的归约器还有:
-1. **降级状态**(`DEGRADED`、`protection_degraded`、`degradedMs`、`protectionHealthyMs`、保护健康百分比);审计不比较这些,只能以生产为标准。
+1. ~~**降级状态**~~ —— **已做,见第 15 节**。
 2. **服务退役**(`stopped_at`)和生命周期(`lifetime.enabled`)。
-3. **故障窗口并入**(`severed_hops`、`_PATH_SEVERED`/`_PATH_REJOINED`,规划/预测的故障窗口)——这是历史 run 才用到的策略,新 run 用 PCE 确认;**是否保留要问**。
+3. ~~**故障窗口并入**~~ —— **已决定不要(2026-10-07,用户)**:新 run 只用 PCE 确认策略;区间模型里**没有**故障窗口并入(`severed_hops`、`_PATH_SEVERED`/`_PATH_REJOINED`、`faultWindowIntegration`、`pathSeveredMs`/`pathSeveredTunnelCount` 都不进新模型)。这是区间化里风险最大的一块,整体拿掉。
 4. **两个时间基准**(`WALL` 与 `SIM`)与墙钟投影(`wall_to_sim`/`plan_to_sim`)。
 5. **多方向、共享隧道**(审计明确不支持)。
 6. **事件计数**:`interruption_events`、`degradation_events`、`switchovers`、`path_switches`、`maxPathSwitches`。
 7. **迟到事实重开切片**的行为(`updatePending`)与"证据不完整就停止累计"。
 **原则不变:G1 不留退路,逐项对拍通过才换。** 其中第 3 项(故障窗口并入)是风险最大的一块,**建议先问:新 run 是否还需要它**——如果产品上只保留 PCE 确认策略,可以把它从区间模型里**整体拿掉**,而不是去复刻 `_path_severance_windows` 的全部逻辑。
+
+## 15. G1 第二阶段结果:降级状态、事件与切换(2026-10-07)
+
+**决定**:故障窗口并入**不要了**(用户)。区间模型里不再有 `severed_hops`、路径切断窗口、`faultWindowIntegration`、`pathSevered*`。
+
+**做了什么**:`availability_intervals.py` 重写:服务的区间状态由 `HEALTHY`/`DEGRADED`/`UNAVAILABLE` 三态组成(原来只有 UP/DOWN),并产出**事件**(`degradation`、`interruption`、`switchover`),事件属于其时刻落在 `(start, end]` 的那个切片。**关键设计点——业务状态不在这里重新定义**:服务的健康由生产里**唯一的**业务状态机 `derive_service_direction_state`(也是 `service_current` 的来源)经 `interval_service_health` 在每个事件处求值——它同时包含"主隧道失败后备用接管 = 冗余已耗尽 = DEGRADED"、"保护对的多样性被 PCE 判为降级 = DEGRADED"、"没有选择就还没投入运行"。区间模块**只负责对时间积分**(这正是游标式扫描做的事,区间取代的就是它),并复用 `V3StatisticsStore._availability_values` 来格式化(百分比算术不是语义)。**这意味着"状态机"仍然只有一份。**
+
+**对拍**(同样两个标准,第一阶段的 4004 + 生产对拍全部仍通过,在此之上):
+
+| 标准 | 比较的字段 | 规模 | 结果 |
+|---|---|---|---|
+| 生产的 `get_slice` | 服务每切片的**全部**发布字段:`observationMs`、`healthyMs`、`degradedMs`、`unavailableMs`、`healthyPct`/`degradedPct`/`unavailablePct`/`availabilityPct`、`degradationEvents`、`interruptionEvents`、`switchovers`;服务的**累计**(前缀和,对比生产靠游标接力算出的累计);每条隧道的 `observationMs`/`unavailableMs`/`interruptionEvents`/`pathSwitches`(=0) | 12 种子 × 25 = **300 个被 store 接受并封账的随机历史**(1 个手写的主备接管用例另计) | **全部相等** |
+| 独立审计 | 观测/不可用 | 4004 个 | **仍全部 MATCH**(区间模块改写后重跑) |
+
+**覆盖是真的**:300 个里 187 个有降级时间、113 个有降级事件、146 个有中断事件和不可用时间、59 个有切换;生成器现在**偏向"先正常起来"**(70% 的场景先让两条腿 UP、主隧道被选中,再发生故障/恢复/切换),并让 **1/4 的时刻落在切片边界上或其 ±1 毫秒处**(97/300 的历史里有恰好落在边界上的事件)。
+
+**突变检查(4 种,全部被抓到)**:忽略保护多样性标志、丢掉切换事件、丢掉降级事件、把事件归属从 `(start,end]` 改成 `[start,end)`。**最后一种在我加入"边界偏置"之前没有被抓到**——第一版随机时刻是均匀的,恰好落在边界上的概率约 1/30000,所以那条规则根本没有被测过;现在被测,并且**生产与我的 `(start,end]` 一致**(没有发现差异)。
+
+**发现(值得写下)**:
+- 区间模型的"事件归属规则"(`(start, end]`,首个切片还包含起点本身)与生产**完全一致**,并且是由随机测试而不是由读代码确认的。
+- 生产的"累计"靠上一个切片的 `cumulative` 接力,区间模型的累计是**前缀和**;300 个历史里两者逐字段相等,说明**接力在这个契约内没有引入任何前缀和算不出来的东西**。接力里有的东西还没覆盖:`complete`/`fromSnapshotIndex`("证据不完整就停止累计"的标志),见下。
+
+**还没做(下一阶段,每项同样的两边对拍)**:
+1. **服务退役**(`stopped_at` 投影到 sim 轴、`retired`、`stateAtBoundary='STOPPED'`)和 `lifetime`。
+2. **两个时间基准**(`WALL` 与 `SIM`)与墙钟投影——**建议问**:新 run 是否还需要 `WALL` 基准?如果只保留 `SIM`,同样可以整体拿掉。
+3. **多方向、共享隧道**(审计明确不支持,生产的 `interval_service_health` 支持多方向)。
+4. 隧道层的 **`pathSwitches`**(ERO 路径键变化,需要 `pathUpdate` 的 hop 序列)。
+5. **累计的 `complete` 标志**(第一个证据不全的切片处永久停止累计)与"新注册服务不算不完整"的规则;这是接力里唯一带**状态**的东西,区间模型要么用"证据不完整"区间属性取代(`entity_interval.evidence_complete`),要么用前缀的 `bool_and`。
+6. 每切片的**聚合**(`commissionedServices`、`degradedAtBoundary`、`switchedServices`、`maxPathSwitches`、`stateAtBoundary` 等)——它们是区间/事件的汇总,不是新语义,但要对拍。
+7. **迟到事实重开切片**(`updatePending`)下区间的局部重放。
 
