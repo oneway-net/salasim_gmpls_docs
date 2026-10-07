@@ -27,7 +27,7 @@ W WSON:W1 标签/栅格模型 ─ W2 统一核心里的 RWA ─ W3 emulator 波�
                        │
 L 跨层:L1 层模型(supporting)─ L2 PNC 内部分层 ─ L3 MDSC 跨层编排+事务日志(依赖 P4)─ L4 跨层故障 ─ L5 统计
                        │
-I 基础设施(独立轨道,大):I1 JetStream  I2 Postgres/Timescale  I3 OSPF 重写(可选保真度模式)
+I 基础设施(独立轨道,大):I1 JetStream  I2 Postgres  I3 OSPF 重写(可选保真度模式)
 ```
 
 硬依赖:
@@ -94,7 +94,7 @@ F3 在 169 验收需要用户批准,阻塞项见 `phase1-f3-runbook.md`(三个�
 | 步骤 | 内容 | 备注 | 估 |
 |---|---|---|---|
 | I1 | JetStream 遥测(D13):设计文档 W4 的方案;ledger 不丢,measurement 溢出采样并标"遥测降级",时钟不暂停 | 与 I2 排期要一起设计,避免统计投影写两遍 | 15 |
-| I2 | Postgres + Timescale(D14):取代 telemetry、pce_state 等多个 SQLite;直接改形态 | 依赖 I1 的消费者设计;租户隔离方案要先问 | 15 |
+| I2 | Postgres(D14,按 run 分区;不用 Timescale,2026-10-07 修订;结果层见 `telemetry-results-model.md`):取代 telemetry、pce_state 等多个 SQLite;直接改形态 | 依赖 I1 的消费者设计;租户隔离方案要先问 | 15 |
 | I3 | OSPF-TE 重写(可选保真度模式) | 只在需要 W5(设计文档)的 OSPF 保真度时做;故障送达主路径不依赖它 | 12 |
 
 ## 4. 推荐顺序(串并结合)

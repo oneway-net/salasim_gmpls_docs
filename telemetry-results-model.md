@@ -1,6 +1,6 @@
 # 遥测结果的数据模型(从头设计)
 
-状态:**设计草案**(2026-10-07)。范围:`stats` schema 里**结果这一半**——从事实(PCE 上报的不可变事件)到切片结果、可用性、故障结果、运行汇总、对外文档。事实层(`fact_index` + 类型化内容表、游标、幂等)沿用 `database-redesign.md` 第 4.1–4.2 节,不重复;控制面(`ctl`)不在本文。本文**取代** `database-redesign.md` 第 4.3–4.5 节中关于结果的部分(`slice_result` 头 + 体、`*_current` 与 `delay_sample` 之外的一切结果表示)。**DDL 没在 Postgres 上跑过**(沙箱起不了 Postgres);凡我没核实的都标了"未核实"。
+状态:**设计草案**(2026-10-07)。范围:`stats` schema 里**结果这一半**——从事实(PCE 上报的不可变事件)到切片结果、可用性、故障结果、运行汇总、对外文档。事实层(`fact_index` + 类型化内容表、游标、幂等)沿用 `database-redesign.md` 第 4.1–4.2 节,不重复;控制面(`ctl`)不在本文。本文**取代** `database-redesign.md` 第 4.3–4.5 节中关于结果的部分(`slice_result` 头 + 体、`service_current`/`service_availability_current`,以及 `delay_sample`、`tunnel_current`、`protection_current` 之外的一切结果表示)。**最新修订**:2026-10-07 的数据库审阅(两类结构修订已并入各节;第三类事项的决策见第 19 节;存储不用 TimescaleDB,见第 20 节)。**DDL 没在 Postgres 上跑过**(沙箱起不了 Postgres);凡我没核实的都标了"未核实"。
 
 依据两份只读调研:后端(`_build_slice_result` 的全部顶层键、累计语义、读路径投影、其它消费者)和前端(UI 实际调用的接口、每个组件读的字段、前端自己做的聚合、载荷大小)。
 
@@ -19,7 +19,7 @@ L0 事实        不可变事件(fact_index + 类型化内容表)               
 L1 时间线      实体状态区间 entity_interval(服务/隧道/保护/物理链路)            ← 新:可用性的真相
 L2 切片结果    measure(窄表:一切标量与计数映射)+ dist(可合并分布)
                + entity_slice(每服务/隧道一行)+ reason_object + link_diag + link_event
-L3 运行结果    run_measure(按指标注册表的聚合规则,由 L2 归约)+ fault_result
+L3 运行结果    run_measure(按指标注册表的聚合规则,由 L2 归约)+ service_result + fault_result*
 L4 文档缓存    slice_state + slice_document(把 L2/L3 装配成现有 UI 要的 JSON,带内容哈希;可随时丢弃重建)
 横切           metric_def:每个指标的单位、类型、"跨切片怎么聚合"——聚合语义成为数据
 ```
@@ -61,13 +61,13 @@ L4 文档缓存    slice_state + slice_document(把 L2/L3 装配成现有 UI 要
 |---|---|
 | T1 | **事实不可变;结果可重建**。任何结果行都能由事实(加控制面输入)重新算出,所以结果表**没有"只此一份"的状态**——丢了不丢数据,只丢缓存 |
 | T2 | **真相与缓存分层**:真相是 L0–L3 的类型化表;给 UI 的 JSON(L4)是**缓存**,带内容哈希,失效即重建 |
-| T3 | **时间用区间,不用游标**:可用性的真相是"实体在 [from,to) 处于状态 S",任一切片的数 = 区间与切片窗口的交集;**不再有跨切片接力**,重建只涉及受影响的实体 |
+| T3 | **时间用区间,不用游标**:可用性的真相是"实体在 [from,to) 处于状态 S",任一切片的数 = 区间与切片窗口的交集;**不再有跨切片接力**,重建只涉及受影响的实体。`entity_slice` 上的累计列是前缀和的**物化**(为分页排序),随时可由区间重建,不是接力 |
 | T4 | **每个指标有单位、类型、聚合规则**,写在注册表里(`metric_def`)。聚合语义是**数据**,不是散落在三处的代码 |
-| T5 | **分布必须可合并**:除了展示用的 `n/mean/p50/p95`,存一个固定边界的直方图,这样任意聚合(分桶、整个 run、跨 run)都能算百分位 |
+| T5 | **分布必须可合并**:除了展示用的 `n/sum/min/max/p50/p95`(均值 = sum/n,不单存),存一个固定边界的直方图,这样任意聚合(分桶、整个 run、跨 run)都能算百分位 |
 | T6 | **维度是列**,不是字符串里的点 |
 | T7 | **查询形状决定键与索引**:最主要的读法是"某个指标随切片的序列"和"某个切片的全部指标",键据此设计 |
 | T8 | **一个量只有一个权威来源**:不再有"全局 + 每域"两份并行的标量段;全局是 `scope='*'` 的一行,域是 `scope=<pce>` 的一行,二者由同一次计算产生 |
-| T9 | 与 run 相关的一切按 `run_id` 作用域(沿用 R9/R14);大表按 run 分区(沿用 O3 的规则,分区集待 `tools/measure-run-volume.py` 的数据) |
+| T9 | 与 run 相关的一切按 `run_id` 作用域(沿用 R9/R14);大表按 run 分区(沿用 O3 的规则;结果层的分区集见第 12 节,待 `tools/measure-run-volume.py` 的数据复核);**不用 TimescaleDB**(第 20 节) |
 
 ## 4. 指标注册表 `metric_def`(横切)
 
@@ -329,9 +329,9 @@ CREATE TABLE stats.slice_document (          -- 内容:只追加/整行替换,�
 
 | # | 风险 | 门槛 / 缓解 |
 |---|---|---|
-| G1 | **可用性区间化是最大的语义重写**(故障窗口并入、两个时间基准、证据完整性、路径切断) | **用 `availability_replay.py` 对拍**(同一批事实,新区间算出的每切片 `up/degraded/unavailable_ms` 与现有 `get_slice` 逐服务逐切片相等)。**用户已决定不留退路(2026-10-07):对拍必须通过,不通过就继续修到通过**;区间化是这个设计的核心,不退回扫描算法 |
-| G2 | **文档装配与现有 JSON 必须逐字段一致**(UI 全量依赖) | 黄金测试:对同一事实序列,新装配的文档与旧实现的 `get_slice` **规范化后逐字段相等**,差异只允许出现在本文明确声明的地方(`approximate` 标记、`revision` 的来源)。**契约测试的 43 个场景就是现成的输入** |
-| G3 | **`measure` 行数**:`scoped` 指标 × 约 22 个 PCE × 切片数 | 估算见第 11 节;若超标,把每域标量改成只对 UI 实际可选的域存;或把低价值指标降为只存全局 |
+| G1 | **可用性区间化是最大的语义重写**(原列:故障窗口并入、两个时间基准、证据完整性、路径切断。**现状**:前两项已决定不做,证据完整性在区间模型里恒为 true;第 1–4 阶段已对拍通过(第 14–17 节);剩余:按方向的双向服务(D-17)、隧道层 `pathSwitches`、迟到事实下的局部重放) | **用 `availability_replay.py` 对拍**(同一批事实,新区间算出的每切片 `up/degraded/unavailable_ms` 与现有 `get_slice` 逐服务逐切片相等)。**用户已决定不留退路(2026-10-07):对拍必须通过,不通过就继续修到通过**;区间化是这个设计的核心,不退回扫描算法 |
+| G2 | **文档装配与现有 JSON 必须逐字段一致**(UI 全量依赖) | 黄金测试:对同一事实序列,新装配的文档与旧实现的 `get_slice` **规范化后逐字段相等**,差异只允许出现在本文明确声明的地方(`approximate` 标记、`revision` 的来源、不再输出的 `faultWindowIntegration`(D-16)、旧实现的 slice-0 墙钟投影缺陷(D-18))。**契约测试的 43 个场景就是现成的输入**。**现状**:第一阶段(拆开再装回)1073/1073 通过,作为常开钩子(第 18 节) |
+| G3 | **`measure` 行数**:`scoped` 指标 × 约 22 个 PCE × 切片数 | 估算见第 11 节(修订后约 118 万行/run);若超标,先做已结束 run 的压实(第 20 节,不丢数据),再考虑把每域标量改成只对 UI 实际可选的域存、或把低价值指标降为只存全局 |
 | G4 | **直方图边界与 PCE 上报的桶如何对齐**(未核实) | 看 `admission_metrics.histogram_summary` 与 PCE 发射端;边界一旦定下不能改(合并要求) |
 | G5 | **物理链路可用性依赖控制面的故障确认**(新的跨 schema 依赖) | 确认写入必须 bump 对应切片的 `slice_revision`;写进并发/契约测试 |
 | G6 | **每域标量的消除要求 UI 的 `domainResults` 路径由装配器合成** | 装配器的路径表 + G2 的黄金测试覆盖 `scope≠'*'` |
@@ -375,10 +375,10 @@ CREATE TABLE stats.slice_document (          -- 内容:只追加/整行替换,�
 | 区间化的退路 | **不接受**:对拍(`availability_replay.py`)必须通过,没有"退回扫描算法"的备选 |
 
 **这些决定带来的具体工作**(在 I2 的结果层里,按顺序):
-1. `metric_def` 注册表 + 从 `_build_slice_result` 与 `trend-rows.mjs` 机械导出指标清单(含"每条 UI 字段路径都对应一个 `metric_id`"的测试)。
-2. `entity_interval` + 实体局部重放的推导器,**以 `availability_replay.py` 对拍通过为合入条件**(G1)。
+1. `metric_def` 注册表 + 从 `_build_slice_result` 与 `trend-rows.mjs` 机械导出指标清单(含"每条 UI 字段路径都对应一个 `metric_id`"的测试)。**进度**:清单 428 个指标与常开测试已完成(第 18 节);语义属性(`kind`/`reduce`/权重/分子分母)待从 `trend-rows.mjs` 导出,`unit` 无来源、保持可空。
+2. `entity_interval` + 实体局部重放的推导器,**以 `availability_replay.py` 对拍通过为合入条件**(G1)。**进度**:第 1–4 阶段完成;剩余见第 10 节 G1。
 3. `measure`/`dist`/`entity_slice`/`reason_object`/`link_diag`/`link_event` 的构建器(切片封账事务);`run_measure`、`service_result`、`fault_result*` 的物化。
-4. `slice_document` 装配器(数据驱动的字段路径表)+ **与现有 `get_slice` 逐字段相等的黄金测试**(G2)。
+4. `slice_state` + `slice_document` 装配器(数据驱动的字段路径表;全局文档封账时写,域文档按需)+ **与现有 `get_slice` 逐字段相等的黄金测试**(G2)。**进度**:拆开再装回的第一阶段完成;下一步把 residual 里的 25 个列表搬到 `entity_slice`/`link_diag`/`reason_object`。
 5. 物理链路可用性的写时物化 + 故障确认 bump 修订号(G5)。
 6. **新增 API**(UI 范围的直接后果):
    - `GET /api/v3/runs/{run}/entities?kind=service|tunnel&slice=&state=&q=&sort=&page=&page_size=`:服务端分页/排序/过滤(来自 `entity_slice`);切片文档里的 `byService`/`byTunnel` 数组**在 SUMMARY 投影里不再带**(现有 `slice_list_summary` 已经在 SUMMARY 里丢掉它们,这里把"完整数组"也改为按需)。

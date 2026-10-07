@@ -48,7 +48,7 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
 | D-S10 | 失败计费 | 平台原因（组件故障、资源受限、基础设施）不收费并全额解冻；用户原因（配置不可行、主动取消、预算耗尽）按实际用量；归因可审计、可申诉，无法判定时按平台原因处理 |
 | D-C2 | 生命周期 | Kubernetes Operator + CRD（推翻此前"不写 Operator"） |
 | D-C3 | 编排 | 控制器内的两阶段类型化 RPC（`prepare-run*` 惰性布置 → `commit-clock*` 生效，`reset-run*` 中止），MDSC 跨 PNC、PNC 跨设备两级（§18 O11 已定）；故障/接口配置逐设备幂等；不依赖 candidate lock/confirmed-commit（ODL 服务端不支持）；不引入工作流引擎 |
-| D-C4 | 存储 | JetStream + PostgreSQL/Timescale，替换全部 SQLite |
+| D-C4 | 存储 | JetStream + PostgreSQL（按 run 分区，不用 Timescale，2026-10-07 修订；见 `telemetry-results-model.md` 第 20 节），替换全部 SQLite |
 | D-C5 | 授权 | 统一网关做 OIDC 认证；平台 API 按组织角色授权；实验床 MDSC 的 RESTCONF 用 NACM，按租约授予和收回；服务间 mTLS |
 | D-C6 | 节点粒度 | 分片：一个 pod 承载多个节点槽位，每个节点仍是独立协议实例和独立 NETCONF 端点 |
 | D-C7 | 高可用 | 管理面 HA；实验床内组件故障使当前任务失败（不收费），实验床进入回收流程 |
@@ -73,7 +73,7 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
               └─┬──────▲────┘ └─────────────┘  │ 用量事件          │
   SimulationJob │      │ 查询                   │                   │
  ┌──────────────▼──┐ ┌─┴───────────────────┐  ┌─┴──────────────┐    │
- │ Kueue            │ │ PostgreSQL/Timescale │  │ 计量服务        │    │
+ │ Kueue            │ │ PostgreSQL           │  │ 计量服务        │    │
  │ 排队·配额·公平共享 │ │ 对象存储（S3 兼容）   │  │（租约规格×时长） │    │
  └──────┬──────────┘ └─▲───────────────────┘  └─▲──────────────┘    │
         │ 准入          │ 摄取                    │ 租约时间戳         │
@@ -125,7 +125,7 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
 - 校验与编译：schema 校验 + 套餐上限 + 可行性预检；编译是纯函数，产出**运行配置**（节点身份与链路、域划分、PCE 配置、RFC 9195 快照时间表、故障计划），按内容哈希存入对象存储并缓存。编译同时给出**所需规格**（最少域 PCE 数、最少节点槽位数），选出能容纳它的最小实验床规格。**校验或编译失败在冻结积分之前发生，不收费。**
 - 估价：规格单价 × 预计占用时长（仿真时长 / speedup + 准备与封存时间），给出积分区间；用户确认并设上限。
 - 提交：一个数据库事务内写不可变任务清单 + 账本冻结上限积分（§8.2），然后创建 `SimulationJob`。
-- 结果：查询 Timescale 的事实与投影、对比分析、报表导出（签名链接）。
+- 结果：查询 Postgres 里的结果层（`measure`/`entity_slice`/`run_measure`…，见 `telemetry-results-model.md`）、跨 run 对比、报表导出（签名链接）。
 - 无状态多副本。
 
 ### 4.5 调度：Kueue + 租约绑定
@@ -159,7 +159,7 @@ SALASIM-GMPLS 是面向中国大陆市场的**卫星/地面多域 GMPLS 网络�
 ### 4.9 有状态平台组件
 | 组件 | 用途 | 推荐形态 |
 |---|---|---|
-| PostgreSQL + Timescale | 业务数据、账本、任务清单、事实、投影、审计 | 优先云厂商托管 PostgreSQL（需核实 Timescale 扩展支持）；否则 CloudNativePG |
+| PostgreSQL | 业务数据、账本、任务清单、事实、结果、审计 | 优先云厂商托管 PostgreSQL（不依赖任何扩展）；否则 CloudNativePG |
 | Keycloak 数据库 | 身份数据 | 同一托管实例的独立库 |
 | NATS JetStream | 事实传输与缓冲 | 自建 3 节点集群；去中心化认证，每次运行签发只能发布到 `run.<runId>.>` 的短期用户凭据 |
 | 对象存储 | 编译制品、抓包、报表、备份 | 云厂商 S3 兼容对象存储 |
@@ -224,7 +224,7 @@ Ready ──绑定租约──▶ Leased(prepare → run → seal) ──▶ Res
 与批处理相同的准入与 prepare；运行驱动额外暴露会话 API（经网关按租约转发）：暂停/恢复（操作员动作，写 `ClockAnchor` 符合 I1）、手动注入故障、实时视图（SSE）。按租约时长计费（含暂停），空闲超时自动停止，避免长期占用实验床。手动操作记入会话操作日志，可按日志重放。
 
 ### 6.4 事实与结果
-PCE/节点 → JetStream（`run.<runId>.…`，短期凭据，异步发布，消息 ID 去重）→ 管理面摄取消费者（按任务清单补上组织 ID，Postgres COPY 只追加）→ Timescale 连续聚合与投影 → 任务服务查询。measurement 溢出时采样丢弃并标"遥测降级"（平台原因）；时钟永不因遥测暂停。
+PCE/节点 → JetStream（`run.<runId>.…`，短期凭据，异步发布，消息 ID 去重）→ 管理面摄取消费者（按任务清单补上组织 ID；同一事务写事实、`fact_index`、受影响实体的状态区间，提交即 ack）→ 异步切片构建者（封账写结果层与文档缓存）→ 任务服务查询。measurement 溢出时采样丢弃并标"遥测降级"（平台原因）；时钟永不因遥测暂停。
 
 ### 6.5 失败
 任意阶段失败 → 运行驱动或 Operator 写失败阶段、首个失败组件、证据引用 → 归因器给出类别（§8.4）→ 账本按类别结算 → 实验床进入重置（组件崩溃则直接进入进程重启或回收）→ 用户看到原因、证据摘要与是否收费，可申诉。
@@ -303,8 +303,8 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | 任务当前阶段 | `SimulationJob.status`；历史在 Postgres |
 | 实验床状态与归属 | `Testbed.status`（含 `lease`）；租约历史在 Postgres（计量依据） |
 | 运行期网络配置 | 实验床设备（NETCONF running），重置时清空 |
-| 事实 | Timescale 超表（JetStream 只是传输与缓冲） |
-| 投影、统计 | Timescale 派生，可重建 |
+| 事实 | Postgres 事实表，高体量表按 run 分区（JetStream 只是传输与缓冲） |
+| 投影、统计 | 结果层（状态区间、切片结果、运行结果），由事实派生、可重建；给 UI 的 JSON 只是缓存 |
 | 积分余额与冻结 | 积分账本 |
 | 价目、套餐、账单 | Lago |
 | 支付订单状态 | 支付渠道为准，每日对账 |
@@ -376,7 +376,7 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | 排队与配额 | 无 | Kueue（虚拟实验床资源）+ 租约绑定 |
 | 生命周期 | Backend 调 kubectl + root 网关 | Operator + `TestbedPool`/`Testbed`/`SimulationJob` |
 | 运行驱动 | Backend 常驻、推帧、故障定时 | 实验床内的运行驱动，时间表预下发 |
-| 存储 | 多个 SQLite | Postgres/Timescale + JetStream |
+| 存储 | 多个 SQLite | Postgres + JetStream |
 | 入口与授权 | Next.js 代理、控制器 mTLS 仅认证 | 网关 + OIDC + 组织角色 + 按租约 NACM + mTLS |
 | 运行启动 | HTTP `/sim/start` + 部分控制器 RPC | MDSC → PNC 两级 NETCONF 事务 |
 | 控制器 | 单个控制器（每租户） | 严格 ACTN：MDSC + 每域 PNC，MPI 抽象拓扑 |
@@ -389,7 +389,7 @@ API 组 `salasim.net`，`v1alpha1` 起。
 - **Phase 0 地基（进行中）**：文档入库与检查入口（完成）、YANG 单一制品（完成：`net.salasim:salasim-yang:1.0.0-SNAPSHOT`，修订统一为 2026-10-06，各仓库拷贝与 sync 脚本已删除；镜像构建未验证）、YANG-push spike（完成，`yang-push-design.md`，用户决定见其 §11）、ACTN 抽象拓扑分析（完成，`actn-abstract-topology-analysis.md`，决定见其 §5；Phase 1 总估算约 55–84 agent-day 中的网络部分）、CI 接入。
 - **Phase 1 网络内核收敛到单一路径**：删除已被替代的旧路径；类型化运行启动 + MDSC/PNC 两级 NETCONF 事务；YANG-push 实现（SBI 与 MPI）；PNC 抽象拓扑与 Parent PCE 改用抽象拓扑。
 - **Phase A 首次集群验证与复用可行性**：在 169 上跑当前形态，R20/R36 对照；spike：①节点与场景解耦（槽位的逻辑身份与链路经 NETCONF 配置和清空）②PCE 动态域归属 ③`reset-run` + 校验清单在 PCE 与节点上的实现与切换耗时 ④节点分片寻址与静态状态 ⑤Kueue 虚拟资源配额；产出资源模型初版。
-- **Phase 2 可复用实验床**：与场景无关的节点与 PCE；`reset-run` 与校验；运行驱动从 Backend 剥离（故障调度、封存、会话 API）；JetStream + Postgres/Timescale（W4）；删除时钟暂停与推帧（W3）；任务清单与种子规范；跨复用次数一致性回归。
+- **Phase 2 可复用实验床**：与场景无关的节点与 PCE；`reset-run` 与校验；运行驱动从 Backend 剥离（故障调度、封存、会话 API）；JetStream + Postgres（W4）；删除时钟暂停与推帧（W3）；任务清单与种子规范；跨复用次数一致性回归。
 - **Phase 3 池与租约**：`TestbedPool`/`Testbed`/`SimulationJob` + Operator + Kueue；删除 runtime-deployer、kubectl_ops、controller_deploy、tenant_tls、按场景部署与常驻 Backend 驱动。
 - **Phase 4 SaaS 管理面**：网关、Keycloak（短信、实名适配）、组织与角色、任务服务 API 与控制台改造、计量、积分账本、Lago、支付宝/微信支付（沙箱）、发票适配、失败归因。
 - **Phase 5 规模与性能**：节点分片实现、PCE 并发改造（W2）、Java 25（W1）、池伸缩策略调优、性能基线进 CI。
@@ -424,7 +424,7 @@ API 组 `salasim.net`，`v1alpha1` 起。
 | O1 | Operator 语言：Java（JOSDK）还是 Go（kubebuilder） | Java |
 | O2 | backend 仓库拆分：任务服务、运行驱动、计量、计费各自仓库还是单仓库多镜像 | 单仓库多镜像 |
 | O3 | 节点分片寻址：Multus 辅助地址 vs 端口映射 | Phase A spike 决定 |
-| O4 | 具体选哪家云，以及其托管 PostgreSQL 是否支持 Timescale | 按 Timescale 支持与实例价格比较 |
+| O4 | 具体选哪家云 | 按托管 PostgreSQL 的实例价格与区域比较（2026-10-07 起不再依赖 Timescale，此项不再是存储的前提） |
 | O5 | 规格的具体数字与各池 `minReady` | 资源模型与需求分布确定后定 |
 | O6 | 套餐额度与价目 | 运营与资源模型确定后定 |
 | O7 | 是否开放高级用户直接访问实验床控制器 RESTCONF | 开放（专业及以上），只读 + 会话允许的 RPC，按租约授权 |

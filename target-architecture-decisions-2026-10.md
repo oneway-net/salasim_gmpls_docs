@@ -20,7 +20,7 @@ SSON 已完全移出平台。本文记录交互确认的决策;**只是决策,�
 | D11 | RPC 失败语义 | error-app-tag 三分类(retryable / permanent / unknown),写入 YANG description | 取代按错误文本判断 |
 | D12 | 构建/同步 | 一份 manifest 描述 仓库→镜像→依赖,所有脚本读取;纳入 controller | 远端与分支仍待用户定 |
 | D13 | M8 遥测 | NATS JetStream | 设计文档 W4 |
-| D14 | M11 存储 | Postgres + Timescale | 开发期直接改形态,不写兼容层 |
+| D14 | M11 存储 | Postgres(按 run 分区)。**2026-10-07 修订:不用 Timescale**——唯一实质收益是已结束 run 的压缩,原生压实可替代;托管云与许可证有代价(`telemetry-results-model.md` 第 20 节) | 开发期直接改形态,不写兼容层 |
 | D15 | M10 旧 OSPF 代码 | 删除(tedb/ospfv2 ×2、TopologyUpdaterThread ×2、emulator transport/ospf),需要时重写 | 保留 OspfApiClient/OspfFaultService 作可选保真度入口;W5 对应步骤此前未做 |
 | D16 | 休眠 WSON 旧类 | **已撤销(2026-10-06,用户:WSON 一层的代码都要保留)**。原决定是删除、仅留标签编码;现在 `algorithms/wson/*`、`WSONResourceManager`、TEDB 波长 API、`WSONInformation` 全部保留 | W1/W2/W3 设计时再评估是改造还是重写,**不再预设删除**;`GenericLambdaReservation` 等跨包依赖保持原状 |
 

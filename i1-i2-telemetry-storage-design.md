@@ -7,7 +7,7 @@
 1. **I1 不是从零开始,JetStream 的传输层(slice 1)两端都已经写好**,默认关闭。I1 剩下的是:核实 D5 的"flag day"到底落了多少、把旧 HTTP/`TelemetryOutbox` 路径删掉、在有 socket 的环境里把真实 NATS 跑通。**它需要集群或用户终端,沙箱里做不了。**
 2. **I2 的体量在 backend 的存储层**:`v3_statistics.py` 一个文件 11188 行,全是 SQLite 语义(单写者、`BEGIN IMMEDIATE`、`INSERT OR IGNORE/REPLACE`、`rowid`、`ATTACH`)。这才是 I2 的主要工作量。
 3. **"不要把统计投影写两遍"的做法**:I1 的消费者已经存在,I2 只换它下面的 **存储**,不再另写一个消费者。先把存储收口到一个接口(并在 SQLite 上用"特征化测试"钉住行为),再写 Postgres 实现,用同一套测试对两边跑。这与我们对 C3、Parent 做过的"先钉行为再换实现"一致。
-4. **Timescale 不是前提**:调研里没有任何地方证明需要超表。建议**先用普通 Postgres(按 run 分区)**,Timescale 只在测量事实上做压缩/保留,且要先回答 O4(托管 Postgres 是否支持 Timescale)。理由见 4.4。
+4. **Timescale 不是前提**:调研里没有任何地方证明需要超表。建议**先用普通 Postgres(按 run 分区)**,Timescale 只在测量事实上做压缩/保留,且要先回答 O4(托管 Postgres 是否支持 Timescale)。理由见 4.4。**(2026-10-07 已定:不用 Timescale,见 `telemetry-results-model.md` 第 20 节。)**
 5. **沙箱既不能起 Postgres,也不能起 NATS**(第 6 节),所以所有 Postgres/真实 NATS 的测试要在你的终端或 CI 里跑,在沙箱里只能跑 SQLite 侧的特征化测试和接口层。
 
 ## 1. 现状(事实)
@@ -90,6 +90,8 @@ SQLite 特有写法:`ATTACH`、`PRAGMA`、`BEGIN IMMEDIATE`、`INSERT OR IGNORE`
 
 ### 4.4 Timescale:建议先不用
 
+> **2026-10-07 更新**:已定为**不用**。本节说的"以后在测量事实上按需加压缩"改为:体量超预算时先做**原生压实**(已结束 run 的 `measure` 压成按切片排列的数组),见 `telemetry-results-model.md` 第 20 节;只有压实后仍超出才重新评估。
+
 - 超表要求时间列在**每个**唯一约束里,而我们的幂等键是 `message_id`/`(run,pce,stream,sequence)`,不含时间:要么把时间加进键(破坏幂等语义),要么放弃超表。
 - 连续聚合是**延迟物化**,而 slice 封账依赖序号游标和一致的投影("切片统计与旧实现逐项一致"),不能拿一个滞后的聚合来封账。
 - 真正用得上的是**压缩与保留策略**(measurement 事实量大、只读)。这可以先用普通分区 + 按 run 的 `DROP PARTITION`,以后若实测需要再对测量表单独上 Timescale。
@@ -143,7 +145,7 @@ W4 原设计写"每种投影一个独立的 durable consumer",但:
 ## 8. 需要你回答的问题
 
 - **Q1(范围)**:I2 只做 `pce_state`(事实、游标、投影:瓶颈所在),还是同时迁 `runtime.db` 和冷库?**建议先只做 `pce_state`**:瓶颈和风险都在那里,`runtime.db` 可以在拿到 Postgres 实绩后再迁(它们之间只有 ATTACH 的跨库读,跨 schema 后仍可保留)。
-- **Q2(Timescale)**:接受"先普通 Postgres + 按 run 分区,Timescale 以后只用于测量事实的压缩"吗?O4(托管 Postgres 是否支持 Timescale)是否已有答案?
+- **Q2(Timescale)**(已定,见第 15 节 Q2 行):接受"先普通 Postgres + 按 run 分区,Timescale 以后只用于测量事实的压缩"吗?O4(托管 Postgres 是否支持 Timescale)是否已有答案?
 - **Q3(租户隔离)**:商业架构写的是 RLS 按组织。本阶段是 (a) 只预留 `org_id` 列和角色、不启用策略(**建议**,因为组织模型还没有),(b) 现在就启用?事实表是冗余 `org_id` 还是经 `simulation_runs` 连接?
 - **Q4(环境)**:Postgres 与 live-NATS 的测试跑在哪里:你的终端(docker/本机 `postgresql@14`)、还是 169 集群上?我可以写 `docker compose` 或脚本,但沙箱里验证不了。**另外**请在有环境时帮我量一次"每个 run 的事实行数"(给分区粒度用),我可以给你一条只读 SQL。
 - **Q5(NATS 认证与集群)**:现在是无认证、单副本。每 run 短期凭据和 3 节点集群放在商业版阶段,**本阶段不做**,可以吗?
@@ -158,7 +160,7 @@ OSPF-TE(I3)、NATS 集群/认证、商业版的计量与积分、历史数据迁
 | 问题 | 决定 |
 |---|---|
 | Q1 范围 | **只迁 `pce_state`**(事实、游标、投影);`runtime.db` 和冷库以后再说 |
-| Q2 Timescale | **先普通 Postgres + 按 run 分区**;Timescale 以后只对测量事实按需加,O4 不阻塞 |
+| Q2 Timescale | **先普通 Postgres + 按 run 分区**;Timescale 以后只对测量事实按需加,O4 不阻塞。**2026-10-07 更新:不用 Timescale,超预算时先做原生压实(`telemetry-results-model.md` 第 20 节)** |
 | Q3 租户隔离 | **只预留 `org_id` 列和角色,不启用 RLS 策略** |
 | Q4 环境 | **用户本机终端**跑 Postgres 与 live-NATS 测试(本机有 `postgresql@14`、`nats-server`、docker);沙箱里只做 SQLite 特征化测试、接口层、假端口 |
 | Q5 NATS 认证/集群 | **商业版阶段,本阶段不做** |
