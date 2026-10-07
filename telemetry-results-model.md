@@ -423,3 +423,13 @@ CREATE TABLE stats.slice_document (
 
 **还没做**(第 15 节的 3–7 项):多方向与共享隧道、隧道层 `pathSwitches`、累计的 `complete` 标志、每切片聚合字段、迟到事实下的局部重放。另外:`lifetime`(服务到期自动退役)的**触发**在控制面(`expires_sim_time`、`expiry_attempt_snapshot`、`teardown_requested_at`),产出的就是一个 `stopped_sim_ms`——**可用性模型只消费这个时刻**,所以退役在这里已经完整;触发逻辑属于 `ctl`,不在结果层。
 
+
+## 17. G1 第四阶段结果:累计元数据与每切片聚合字段(2026-10-07)
+
+**做了什么**:区间推导器新增 `first_slice`(服务进入登记表的第一个切片 = 创建时刻所在的 `(start, end]` 窗口)、`cumulative_metadata`(`complete` / `fromSnapshotIndex` / `throughSnapshotIndex`)、`aggregate_rows`(服务层与隧道层每切片的顶层汇总:在册服务/隧道数、观测/正常/降级/不可用时长、可用率、保护健康率、边界上的降级/不可用数、降级/中断事件数、倒换数、倒换服务数,隧道层的 `downAtBoundary` 等)。聚合只由与逐行数字相同的区间和事件求和得到,没有额外状态。
+
+**对拍**:生产对拍测试改成**两个服务**,各自可能在运行开始之后才创建(创建时刻随机,25% 落在切片边界上或旁边)、各自可能在某切片退役;逐项比较每个服务的切片行与累计行(含元数据)、隧道行、边界状态、以及**两层的顶层聚合字段**。12 种子 × 25 个场景,被存储接受的场景全部相等(测试断言至少 15/25 被接受,防止对拍被空转)。另有两个手写用例:切片 1 才登记的服务(累计从 1 开始)、失败恰在停止时刻与晚 1 毫秒。**突变检查**(首切片少一、`switchedServices` 改成求和、聚合不排除已退役、`fromSnapshotIndex` 固定为 0、登记表成员判定偏移)**全部被抓到**。后端全量 2368 通过。
+
+**声明的差异**:`complete` 在区间模型里**恒为 true**。生产需要这个标志,是因为它靠"游标接力"——上一切片缺失就会断链,要标记累计不完整;区间模型的累计由区间直接求和,不依赖上一切片,所以不存在"不完整"的状态。字段保留以维持文档形状,`fromSnapshotIndex` 取服务的登记切片。
+
+**还没做**:多方向与共享隧道(要先问你双向服务的可用性是否仍需要)、隧道层 `pathSwitches` / `switchedTunnelCount` / `maxPathSwitches`(需要 ERO 路径)、迟到事实(`updatePending`)下的局部重放;服务登记表边界还用到 `requested_start_time` / `admitted_sim_time`(测试环境里为 NULL,未覆盖)。
