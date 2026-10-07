@@ -144,7 +144,7 @@
 
 ## 7b. 现有代码中的仿真感知点(需清理,每项单独确认后才动)
 
-只列已见到的,**不是全量**;清理前需做全量盘点。
+全量盘点已完成,见 `simulation-awareness-inventory.md`(以该文档为准;本表仅为早期摘要)。
 
 | 位置 | 感知点 | 方向 |
 |---|---|---|
@@ -155,7 +155,7 @@
 | PCE `/sim/*` 接口、`SALASIM_FRAME`(PCEP) | 仿真控制走核心接口 | 移出(架构演进计划 W7 已有) |
 | PCE/事实里的 `runId`、run 栅栏、`resultScope=SLICE` | run/slice 是仿真语汇 | 核心改为 `network_id` + epoch |
 | Emulator `node/mgmt/NodeSimClock` | 节点内的仿真时钟/加速 | 节点按真实时间运行,删除时间缩放 |
-| Backend `topology_clock_service` 等 | 后端按 tick 推帧 | 移入 `sim` 回放器,经标准接口驱动 |
+| Backend `topology_clock_service` 等 | 运行启动序列、时钟/故障编排(盘点发现:已不再逐 tick 推帧,帧在 prepare 时一次性下发,由 PCE 自己推进) | 移入 `sim` 回放器,经标准接口驱动 |
 
 **含义**:现有"加速比 > 1"的运行方式不再由设备实现;需决定是否接受"设备实时、环境加速回放"(见 §8-7)。
 
