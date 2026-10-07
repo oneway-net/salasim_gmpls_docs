@@ -323,6 +323,8 @@ salasim_sim/            仿真模块
 
 > **P1 实施状态(2026-10-08,本地,未推送)**:① `PceContext`(`net.salasim.pce.app`)取代 `SimRegistry` 中的状态服务(账本、链路身份、TED、占用库、合并缓存),构造注入;`SimRegistry` 只剩运行机制(run、时钟线程、帧源、预计算 worker、运行配置),随 P2/P6 删除。`PendingUpdateTracker`/`TunnelUpdateEmitter`(进程级单例)由 `DomainPCEServer` 绑定,`LinkIdentityResolver` 由上下文发布注册表——三者随 P2/P3 的链路身份与事实发射重写时消除。② 包级重组:27 个 model/recovery/plan 类移入 `net.salasim.pce.*`;`signaling`、`facts`、`mgmt` 的目标包尚未建立(其类仍在 `es.tid.pce.*` 旧包,无仿真依赖,按需随后续阶段移动)。③ 重启恢复:S 标志默认开;无状态的 PCE 不发 LSP-DB-VERSION,PCC 必须全量同步;同步期间全局拦截新建;无结束标记 120 s 过期重连。**未验证**:没有端到端重启测试(沙箱不能绑定本地端口),需要在可开端口的机器上用 Emulator + PCE 实测。
 
+> **P2 实施状态(2026-10-08,本地)**:已完成 ① 注入 `Clock`(`net.salasim.pce.model.Clock`、`ManualClock`),由 `PceContext` 持有;超时/陈旧判断不再用"扣除暂停的墙钟"(已删,含 `SimulationRun` 的暂停计时);② `net.salasim.pce.plan`:`ContactPlan`(TVR 内存形式)+ `PlanReconciler`(EARLY/LATE/MISSING/UNPLANNED,实际优先,不碰 TED),12 个无头确定性测试。**未做(与 M1 一起切换,因为会让现有按帧驱动的参考场景失效)**:重试阶梯与 TTL 从"切片"改毫秒/拓扑版本(`RunRuntimeConfig.RecoveryConfig`、YANG、Backend 编译器要同步);TED 只由实际链路状态报告更新、接触计划调度器替换时钟线程、删除 `AutonomousClockThread`/`FrameIngestion`/`SimulationRun` 帧库存;`PlanReconciler` 接入链路状态报告入口与计划安装 RPC。
+
 与 `architecture-evolution-design.md` 的关系:W1(Java 25)、W2(锁与并发,与 P1/P2 合并)、W4(JetStream/Postgres,与 P3 合并)继续有效;W3、W5、W6 中与本文冲突的部分已在该文头部标注取代。
 
 ## 6. 待决项与风险
