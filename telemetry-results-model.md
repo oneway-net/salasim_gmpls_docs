@@ -100,32 +100,38 @@ CREATE TABLE stats.entity_interval (
   entity_kind text NOT NULL CHECK (entity_kind IN ('service','tunnel','protection_group','physical_link')),
   entity_id text NOT NULL,
   direction text NOT NULL DEFAULT 'forward' CHECK (direction IN ('forward','reverse')),
-  basis text NOT NULL CHECK (basis IN ('SIM','WALL')),          -- 现有可用性有两个时间基准(faultTimeBasis)
-  from_ms bigint NOT NULL,                                       -- sim 时间(或 wall 毫秒),闭
+  from_ms bigint NOT NULL,                                       -- sim 时间,闭(只有 SIM 一个时间基准,第 16 节)
   to_ms bigint,                                                  -- 开;NULL = 仍在进行
-  state text NOT NULL,                                           -- UP/DEGRADED/DOWN/PROVISIONING/… (按 entity_kind 的取值集合 CHECK)
+  state text NOT NULL,
   attrs jsonb NOT NULL DEFAULT '{}'::jsonb,                      -- 冗余、降级原因、选中的隧道、来源(PCE_CONFIRMED/…)
-  evidence_complete boolean NOT NULL DEFAULT true,
   caused_by text,                                                -- 事实的 message_id 或故障事件 id
   CHECK (to_ms IS NULL OR to_ms > from_ms),
-  PRIMARY KEY (run_id, entity_kind, entity_id, direction, basis, from_ms)
-) PARTITION BY LIST (run_id);
-CREATE UNIQUE INDEX ON stats.entity_interval (run_id, entity_kind, entity_id, direction, basis) WHERE to_ms IS NULL;  -- 每个实体最多一个进行中的区间
+  CHECK ((entity_kind = 'service' AND state IN ('HEALTHY','DEGRADED','UNAVAILABLE'))
+      OR (entity_kind = 'tunnel'  AND state IN ('UP','DOWN'))
+      OR entity_kind NOT IN ('service','tunnel')),               -- 另两类的取值集合在它们的推导器落地时补
+  PRIMARY KEY (run_id, entity_kind, entity_id, direction, from_ms)
+);                                                               -- 普通表(约 5 万行/run,低于 O3 的分区判据)
+CREATE UNIQUE INDEX ON stats.entity_interval (run_id, entity_kind, entity_id, direction) WHERE to_ms IS NULL;  -- 每个实体最多一个进行中的区间
+CREATE INDEX ON stats.entity_interval (run_id, entity_kind, state) WHERE to_ms IS NULL;                         -- 按当前状态列服务(O12)
 ```
+
+- **状态取值以推导器 `availability_intervals.py` 为准**:服务 `HEALTHY`/`DEGRADED`/`UNAVAILABLE`,隧道 `UP`/`DOWN`。**"尚未投入运行"不是一个状态,而是没有区间**:服务从选中隧道第一次可承载业务起才有区间,隧道从第一次 `ACTIVE` 起;退役(`stopped_sim_ms`)或 `REMOVED` 处区间结束。所以 `PROVISIONING` 只出现在控制面视图里(无区间 + 有绑定),不进本表。
+- **没有 `evidence_complete` 列**(R15):G1 第四阶段证明区间模型里累计的 `complete` 恒为 true(第 17 节),这一列没有写入方也没有读者。
 
 **为什么用区间**(T3):
 - **任一切片的可用性 = 区间与窗口的交集**:
   ```sql
   SELECT entity_id,
-         SUM(LEAST(COALESCE(to_ms, :slice_end), :slice_end) - GREATEST(from_ms, :slice_start)) FILTER (WHERE state='UP')          AS up_ms,
-         SUM(... ) FILTER (WHERE state='DEGRADED') AS degraded_ms,  SUM(...) FILTER (WHERE state='DOWN') AS unavailable_ms
+         SUM(LEAST(COALESCE(to_ms, :slice_end), :slice_end) - GREATEST(from_ms, :slice_start)) FILTER (WHERE state='HEALTHY')     AS up_ms,
+         SUM(... ) FILTER (WHERE state='DEGRADED') AS degraded_ms,  SUM(...) FILTER (WHERE state='UNAVAILABLE') AS unavailable_ms
   FROM stats.entity_interval
-  WHERE run_id=:run AND entity_kind='service' AND basis=:basis AND from_ms < :slice_end AND COALESCE(to_ms, :slice_end) > :slice_start
+  WHERE run_id=:run AND entity_kind='service' AND from_ms < :slice_end AND COALESCE(to_ms, :slice_end) > :slice_start
   GROUP BY entity_id;
   ```
   累计可用性 = 同样的查询取 `[run_start, slice_end]`——**没有接力、没有游标**。
 - **重建局部化**:一个实体的新事实只需要**按序号重放这一个实体的事实**重算它的区间(每个实体的事实只有几条到几十条),不影响别的实体,也不影响别的切片(P3 消失)。常见情形(新事实是该实体按序号的最新一条)是追加:关闭进行中的区间、开新区间。
-- `service_current`/`tunnel_current` 的"当前状态"**就是 `to_ms IS NULL` 的那一行**:`service_current` 变成视图(`ctl.service_state_v` 的 `LEFT JOIN` 对象不变);不再有"当前投影"与"时间线"两份。**待核实**:`service_current` 现在还带 `redundancy`/`protection_ready_at`/`degradation_reason`,这些进 `attrs`;控制面 JOIN 要的列由视图投影出来。
+- **服务**的"当前状态"**就是 `to_ms IS NULL` 的那一行**:`stats.service_current` 是这张表上的**视图**(`ctl.service_state_v` 的 `LEFT JOIN` 对象名不变),不再有"当前投影"与"时间线"两份;按状态过滤走上面的部分索引。**待核实**:`service_current` 现在还带 `redundancy`/`protection_ready_at`/`degradation_reason`,这些进 `attrs`;控制面 JOIN 要的列由视图投影出来。
+- **隧道与保护组的当前投影保持物化**(`tunnel_current`、`protection_current`,在摄入事务内维护,`database-redesign.md` 第 4.5 节):它们的主要内容(`path jsonb`、`path_complete`、选中关系)不是可用性语义,放进每个区间的 `attrs` 会被逐区间复制。它们与 `entity_interval` 的隧道行**由同一个摄入事务从同一条事实写出**,不构成两个写者。(2026-10-07 审阅采纳,取代本节旧版"`*_current` 全部变视图"的说法。)
 - **风险(第 10 节的第一个门槛)**:现有可用性是 `_build_service_availability`(5651–6340,近 700 行)的"扫描 + 游标"算法,里面有故障窗口并入(计划/预测的故障窗口)、两个时间基准、证据完整性、"路径被切断"等规则。把它改写成"从事实推导区间"是**整个设计里最大的一项语义重写**;好在仓库里有一个**独立的实现可当检验标准**:`availability_replay.py`(从原始 `pce_tunnel_updates`/`pce_protection_updates` 独立重放,今天就被审计脚本拿来对拍)。**没有这个对拍通过,不换。**
 
 ## 6. L2 切片结果
@@ -168,7 +174,7 @@ CREATE TABLE stats.dist (
   mean double precision, p50 double precision, p95 double precision,      -- 精确值:由该切片的原始样本在构建时算出,展示用
   hist int[],                                                             -- 固定边界的直方图计数,供合并
   PRIMARY KEY (run_id, slice_index, scope, metric_id, dim_a, dim_b)
-) PARTITION BY LIST (run_id);
+);                                                                        -- 普通表(约 2.3 万行/run,低于 O3 判据)
 ```
 
 - **每切片的 `p50/p95` 仍是精确值**(从当时的原始样本算,与现有语义一致);`hist` 是**额外**的:按每个指标固定的对数边界(边界写在 `metric_def` 旁的一张小表里,**同一指标永远同一组边界**,否则不能合并)。**合并后的百分位是近似的**(误差 ≤ 一个桶的宽度),所以**读时必须标明"近似"**,UI 分桶不再把百分位置 `null`(P4)。
@@ -186,7 +192,7 @@ CREATE TABLE stats.entity_slice (                          -- 取代 byService /
   state_at_boundary text NOT NULL,
   observation_ms bigint NOT NULL, up_ms bigint NOT NULL, degraded_ms bigint NOT NULL, unavailable_ms bigint NOT NULL,
   interruption_events int NOT NULL DEFAULT 0, switchovers int NOT NULL DEFAULT 0, path_switches int NOT NULL DEFAULT 0,
-  protection_healthy_ms bigint, evidence_complete boolean NOT NULL,
+  protection_healthy_ms bigint,
   PRIMARY KEY (run_id, entity_kind, entity_id, direction, slice_index)
 ) PARTITION BY LIST (run_id);
 CREATE INDEX ON stats.entity_slice (run_id, slice_index, entity_kind);
@@ -196,10 +202,10 @@ CREATE TABLE stats.reason_object (                         -- 取代 degradation
   layer text NOT NULL CHECK (layer IN ('service','tunnel')),
   reason text NOT NULL, object_id text NOT NULL,
   PRIMARY KEY (run_id, slice_index, layer, reason, object_id)
-) PARTITION BY LIST (run_id);
+);                                                         -- 普通表(行数与原因对象数成正比,低于 O3 判据)
 ```
 
-- **`entity_slice` 是由 `entity_interval` 在切片封账时算出的物化(可重建)**,不是真相。累计量**不存**:用窗口函数 `SUM(up_ms) OVER (PARTITION BY entity_id ORDER BY slice_index)`(前端三个累加器的服务端等价物);"在第一个证据不全的切片处永久停止"= 对 `evidence_complete` 取前缀的 `bool_and`。
+- **`entity_slice` 是由 `entity_interval` 在切片封账时算出的物化(可重建)**,不是真相。累计量**不存**:用窗口函数 `SUM(up_ms) OVER (PARTITION BY entity_id ORDER BY slice_index)`(前端三个累加器的服务端等价物)。没有 `evidence_complete` 列,也没有"在第一个证据不全的切片处停止累计"的逻辑——区间模型里 `complete` 恒为 true(第 17 节),按 R15 删除。
 - 有了 `entity_slice`,UI 的服务/隧道表可以**服务端分页、排序、过滤**(P9);`/reason-objects` 变成 `SELECT DISTINCT layer, reason, object_id`。
 
 ### 6.4 链路:`link_diag`、`link_event`
@@ -216,9 +222,11 @@ CREATE TABLE stats.link_diag (                             -- 取代 links.diagn
 CREATE TABLE stats.link_event (                            -- 取代 links.stateChanges 与 links.faults 的逐链路部分
   run_id text NOT NULL, slice_index int NOT NULL, pce_id text NOT NULL, directed_link_key text NOT NULL,
   event text NOT NULL CHECK (event IN ('TOPOLOGY_CREATED','TOPOLOGY_RETIRED','OPER_DOWN','OPER_RECOVERED')),
-  link_type text, at_sim_ms bigint, fault_event_id text,
-  PRIMARY KEY (run_id, slice_index, pce_id, directed_link_key, event, at_sim_ms)
-) PARTITION BY LIST (run_id);
+  seq int NOT NULL,                                        -- 该切片内的事件序号(构建器按发生顺序编号)
+  link_type text, at_sim_ms bigint, fault_event_id text,   -- at_sim_ms 可为空(不是每个事件都带 sim 时刻,待核实),所以不进主键
+  PRIMARY KEY (run_id, slice_index, seq)
+);                                                         -- 普通表(行数与故障数成正比,低于 O3 判据)
+CREATE INDEX ON stats.link_event (run_id, pce_id, directed_link_key, slice_index);   -- 某条链路的事件历史
 ```
 
 - **原始链路仍然在批次完成后删除**(沿用 `database-redesign.md` 第 4.3 节的更正);`link_diag` 只留热点前 N,`link_event` 只留**状态变化事件**(体量与故障数成正比,不与链路数成正比)。
@@ -316,9 +324,11 @@ CREATE TABLE stats.slice_document (
 
 ## 12. 与现有设计和文档的关系
 
-**被本文取代**:`database-redesign.md` 第 4.4 节的 `slice_result` + `slice_result_body`(降为本文的 `slice_document` 缓存)、第 4.5 节的 `*_current` 与 `service_availability_current`(`*_current` 变成 `entity_interval` 的视图;`service_availability_current` 是可用性游标,被区间取代)、`delay_sample` 以外的所有结果表示。
+**被本文取代**:`database-redesign.md` 第 4.4 节的 `slice_result` + `slice_result_body`(降为本文的 `slice_document` 缓存)、第 4.5 节的 `service_current` 与 `service_availability_current`(`service_current` 变成 `entity_interval` 开放区间上的视图;`service_availability_current` 是可用性游标,被区间取代;`tunnel_current`/`protection_current` **仍物化**,见第 5 节)、`delay_sample` 以外的所有结果表示。
 **不变**:事实层(`fact_index` + 内容表 + 游标 + 幂等)、链路批次(临时 chunk + `link_batch.metrics`)、`ctl` schema、并发模型与锁序、分区与清理、`org_id` 预留、"没有迁移机制"。
 **对 I2 的影响**:这是一次**结果层的重写**,不是换存储。`_build_slice_result`(~2000 行)与 `_build_service_availability`(~700 行)被"构建器(写 L2)+ 装配器(读 L2 → JSON)"取代。我现在估 I2 **约 50–75 天**(±50%;上一版 32–46),**增量主要在:可用性区间化 + 对拍(G1)、装配器与黄金测试(G2)、指标注册表的导出**。若只做存储替换而不动结果层,仍是上一版的估算。
+
+**分区集(2026-10-07 审阅,按 O3 判据"每 run 预计 > ~10⁵ 行才分区")**:结果层只有 `measure`、`entity_slice`、`link_diag`(前 N × 23 作用域 × 切片数)按 `run_id` 分区;`entity_interval`、`dist`、`reason_object`、`link_event` 及 L3/L4 表是 `run_id` 打头主键的普通表,清理时 `DELETE … WHERE run_id=$1`。行数仍是第 11 节的估算,真实数据回来后按同一判据复核。
 
 ## 13. 已确认的决定(2026-10-07,用户)
 
@@ -397,7 +407,7 @@ CREATE TABLE stats.slice_document (
 2. ~~**两个时间基准**~~ —— **已决定不要(2026-10-07,用户)**:新模型只有 `SIM` 基准;`entity_interval.basis` 列**删除**(第 5 节的 DDL 里的 `basis text CHECK ('SIM','WALL')` 及主键里的 `basis` 不再需要),墙钟投影(`wall_to_sim`、`plan_to_sim`)不进新模型。
 3. **多方向、共享隧道**(审计明确不支持,生产的 `interval_service_health` 支持多方向)。
 4. 隧道层的 **`pathSwitches`**(ERO 路径键变化,需要 `pathUpdate` 的 hop 序列)。
-5. **累计的 `complete` 标志**(第一个证据不全的切片处永久停止累计)与"新注册服务不算不完整"的规则;这是接力里唯一带**状态**的东西,区间模型要么用"证据不完整"区间属性取代(`entity_interval.evidence_complete`),要么用前缀的 `bool_and`。
+5. ~~**累计的 `complete` 标志**~~(第 17 节:区间模型里恒为 true,`evidence_complete` 列已删)(第一个证据不全的切片处永久停止累计)与"新注册服务不算不完整"的规则;这是接力里唯一带**状态**的东西,区间模型要么用"证据不完整"区间属性取代(`entity_interval.evidence_complete`),要么用前缀的 `bool_and`。
 6. 每切片的**聚合**(`commissionedServices`、`degradedAtBoundary`、`switchedServices`、`maxPathSwitches`、`stateAtBoundary` 等)——它们是区间/事件的汇总,不是新语义,但要对拍。
 7. **迟到事实重开切片**(`updatePending`)下区间的局部重放。
 

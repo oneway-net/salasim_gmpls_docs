@@ -37,19 +37,21 @@ ctl.deployment ──< ctl.run ──< ctl.service ──< ctl.service_tunnel >�
       ├── ctl.topology_snapshot ──< topology_node / topology_link ──< topology_link_alias
       └── ctl.clock_projection
 
-stats.*  (全部按 run_id LIST 分区;只认 run_id,不认 deployment)
+stats.*  (只认 run_id,不认 deployment;只有高体量表按 run_id LIST 分区,见 O3)
    fact_index ── 登记每一条事实的身份与序号(所有权的唯一来源)
    ├─ tunnel_update ─ protection_update ─ protection_dependency      (账本流)
    ├─ metric_fact · fault_impact · reuse_event · window_sample       (测量流)
    ├─ terminal_fact
    ├─ link_batch ──< link_chunk(临时,批次完成即删)                    (快照流)
    stream_state · run_input · slice_revision · rejected_fact
-   slice_result ── slice_result_body · delay_sample
-   投影:service_current · tunnel_current · protection_current · service_availability_current
+   slice_result ── slice_result_body · delay_sample     (结果层被 telemetry-results-model.md 取代)
+   投影:tunnel_current · protection_current(物化);service_current(entity_interval 上的视图)
    idle_reservation
 ```
 
 **表数:41 → 38**(`ctl` 15 + `cfg` 1 + `stats` 22;第 11 节的优化后 `stats` 里 `link_sample` 不再有、`slice_result` 拆成两张,总数不变)。数量不是目的;目的是去掉不变量的隐含部分。
+
+> **2026-10-07 审阅修订**:`service_current` 改为视图、`service_availability_current` 删除、`ctl.service` 增加 `stopped_sim_ms`;结果层(`slice_result*` 与所有结果表)以 `telemetry-results-model.md` 为准。上面的表数是结果层重写之前的数字,结果层的表数以那份文档为准。
 
 ## 2. 设计规则(在 `postgres-schema-design.md` 第 1 节基础上增改)
 
@@ -109,6 +111,8 @@ CREATE TABLE ctl.service (                       -- 纯"意图":请求了什么
   requested_start_time timestamptz, submitted_at timestamptz, admitted_sim_time timestamptz,
   expires_sim_time timestamptz, lifetime_seconds double precision, expiry_attempt_slice int, expiry_error text,
   teardown_requested_at timestamptz, stopped_at timestamptz, stopped_slice_index int,
+  stopped_sim_ms bigint,                         -- 停止时刻(sim 时钟,停止那一刻由时钟锚点换算):可用性只读它;stopped_at 只用于展示/审计
+  CHECK ((stopped_sim_ms IS NULL) = (stopped_at IS NULL)),
   created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
   CHECK (src_node_id <> dst_node_id)
 );                                               -- 没有 state 列,没有 deployment_id 列
@@ -162,7 +166,7 @@ LEFT JOIN stats.service_current sc ON sc.run_id = s.run_id AND sc.service_id = s
 
 - **没有 `derived_state_cached`**,也没有两个写者。"PCE 还没投影"的服务只有 `DRAFT`/`PROVISIONING` 两种取值。**行为变化(已确认)**:服务的 `UP/DEGRADED/DOWN` 现在来自 PCE 观测;唯一保留的控制面推导是**保持期**(已确认保留):观测为 `DOWN` 且选中的隧道仍在 `hold_down_until` 之前 → 显示 `DEGRADED`,在视图里按需计算,**不写回任何列**。
 - **与旧视图的差别(未核实,要由契约测试钉住)**:旧视图里"选中隧道 `SIGNALING`/`REROUTING` → `DEGRADED`"和"选中隧道 `ACTIVE` 但有未激活的候选 → `DEGRADED`"这两支,现在改由 PCE 观测的状态给出(`sc.state`)。**PCE 投影是否在这两种情形下给出同样的值,我没有核实**;I2-e 要对照 `service_current` 的生成逻辑(`_refresh_service_current_locked`)逐支确认,不一致的地方要么在视图里补,要么记为有意的行为变化。
-- 过滤"按状态列服务"走 `stats.service_current(run_id, state)` 的索引。**性能未测**(历史上服务列表 4–6 s 就出在这条路径,新视图要在 I2-e 用真实数据量做基准,不达标再物化,但物化必须是**单写者**的)。
+- `stats.service_current` 是 `stats.entity_interval` 开放区间(`to_ms IS NULL`)上的视图(第 4.5 节),过滤"按状态列服务"走 `entity_interval (run_id, entity_kind, state) WHERE to_ms IS NULL` 的部分索引。**性能未测**(历史上服务列表 4–6 s 就出在这条路径,新视图要在 I2-e 用真实数据量做基准,不达标再物化,但物化必须是**单写者**的)。
 
 ### 3.3 其余控制面表
 
@@ -279,7 +283,17 @@ CREATE TABLE stats.run_input (run_id text PRIMARY KEY, inconsistency_version big
 
 ### 4.5 投影与延迟样本
 
-- `tunnel_current`、`protection_current`、`service_current`、`service_availability_current`:**保持物化、在摄入事务内维护**(这是 `service_state_v` 的权威来源,必须与事实同事务)。列强类型化(`path jsonb`、`path_complete boolean`、`commissioned boolean`);主键含 `run_id`。
+- `tunnel_current`、`protection_current`:**保持物化、在摄入事务内维护**。列强类型化(`path jsonb`、`path_complete boolean`、`commissioned boolean`);主键含 `run_id`。
+- `service_current`:**不再是表**,是 `stats.entity_interval` 开放区间上的视图(`telemetry-results-model.md` 第 5 节);区间在摄入事务内维护,所以 `service_state_v` 仍与事实同事务。状态值映射回控制面的取值,`service_state_v` 不变:
+  ```sql
+  CREATE VIEW stats.service_current AS
+  SELECT run_id, entity_id AS service_id, direction,
+         CASE state WHEN 'HEALTHY' THEN 'UP' WHEN 'UNAVAILABLE' THEN 'DOWN' ELSE state END AS state,
+         from_ms AS since_sim_ms, attrs
+  FROM stats.entity_interval WHERE entity_kind = 'service' AND to_ms IS NULL;
+  ```
+  **待核实**:`derive_service_direction_state` 产出的取值是否只有 `UP`/`DEGRADED`/`DOWN` 三种(其余取值在区间模型里表现为"无区间",由 `service_state_v` 的 `DRAFT`/`PROVISIONING` 分支给出)。按状态过滤的查询要把 API 状态先翻成区间状态再查(`CASE` 之后的列用不上索引,O12)。
+- `service_availability_current`:**删除**(它是可用性游标,被区间取代)。
 - `delay_sample`(原 `tunnel_snapshot_delay_samples`):`PRIMARY KEY (run_id, id identity)` + `UNIQUE (run_id, tunnel_id, snapshot_index)`;`ero jsonb`、`missing_hops jsonb`、`consistency_violations jsonb`。
 - `idle_reservation(run_id, connection_name, reserved_bandwidth_bps bigint)`,不变。
 - `protection_dependency`:外键 `(run_id, message_id) → protection_update`,`ON DELETE CASCADE`(同分区内),不变。
