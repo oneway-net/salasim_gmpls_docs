@@ -1,6 +1,6 @@
 # 按真实网络设计的数据库(再审计与重新设计,2026-10-07)
 
-状态:**设计草案,尚未决定,没有写任何代码。** 取代三份文档里的**存储形态**:`database-redesign.md`(控制面与事实层)、`telemetry-results-model.md`(结果层)、`network-facts-statistics-design.md`(上一版"网络事实"草案)。凡没有核实的地方都标了"未核实"。
+状态:**第 10 节的决定已确认;DDL 已写并在真实 Postgres 14.17 上验证(第 11 节);摄入与应用代码没有写。** **第 3 节里的表草图以 `salasim_gmpls_backend/db/schema/*.sql` 为准**——第 10.1 节解释了为什么 DDL 与草图不同。 取代三份文档里的**存储形态**:`database-redesign.md`(控制面与事实层)、`telemetry-results-model.md`(结果层)、`network-facts-statistics-design.md`(上一版"网络事实"草案)。凡没有核实的地方都标了"未核实"。
 
 ## 0. 结论
 
@@ -215,3 +215,46 @@ ingest.rejected(run_id, source, stream, seq, reason, payload_hash, sample)      
 1. 核实第 6 节的两个"未核实"项,并从一个真实运行导出 `net`/`pm` 的变化率(链路快照逐帧差分的比例)。
 2. 纵切:`fm.fault` + `fm.alarm` + `te.lsp_state` + `cp.transaction` 在 SQLite 里用普通表与视图实现,对拍恢复时间与可用性。
 3. 为 `te`、`cp`、`fm` 各写一份"一条 PCRpt/PCReq/故障确认如何落成区间与事务"的摄入规格(含并发与迟到)。
+
+## 10. 已确认的决定与对草图的修订(2026-10-07)
+
+### 10.1 用户确认
+| 问题 | 决定 |
+|---|---|
+| `ctl` 的定位 | **历史档案**;活的配置/运行态在控制器里。`runtime_store`/`service_store`/`tunnel_store` 不迁成权威存储 |
+| LSP 模型 | **以 `ietf-pcep` 的 LSP-DB 为准**(`ietf-te` 草案未引入) |
+| 落地范围 | **一次重画全部九部分**(不先做纵切) |
+| 观测者 | **预留列与枚举**(`observer`:`pce:` / `pcc:` / `agent:` / `controller:`),现在没有节点代理的数据 |
+| 此前已定 | 按事实的自然粒度存、封账打哈希快照、PCE 补发操作记录(见 `network-facts-statistics-design.md` 第 11 节) |
+
+### 10.2 写 DDL 时对第 3 节草图的三处修订(诚实说明为什么)
+1. **状态区间不是真相,转移事件才是;区间是视图。** 草图把 `during int8range` 当作存储并配排他约束。这是错的:同一毫秒内的 DOWN→UP 在范围类型里是**空区间**,"发生过一次中断"这个事件就丢了;迟到事实还得拆分已有区间。改为:只追加的**转移事件** `(at_ms, seq)`,区间由 `lead()` 视图给出——排他约束不再需要(只剩 `net.contact`,它是**计划**区间),迟到事实就是多插一行。冒烟测试里"同一毫秒的抖动"和"迟到事件把中断拆成两段"两项直接验证了这点。
+2. **操作的阶段是时长,不是时刻。** 真实操作块报的是 `waitingDelayMs`、`pathComputationDelayMs`、`signalingDelayMs`、`provisioningDelayMs`,外加触发/开始/完成三个模拟时刻。`cp.transaction` 的列按此改(草图写的是"计算开始/结束时刻")。
+3. **过渡期要两张表来安放"现在还没有逐次记录"的度量事实:** `cp.delta_sample`(每帧的增量计数)和 `cp.latency_sample`(单次时延),再加 `cp.hist_sample`。PCE 改发事务后这三张删除。
+
+另:**业务健康不是视图而是派生缓存** `ana.service_health_event`——业务状态机是代码(已有、已对拍),不是 SQL;迟到事实通过 `ana.input_rev`/`ana.stale` 触发重建。
+
+### 10.3 与已有文档的关系
+取代存储形态:`database-redesign.md`(控制面/事实层)、`telemetry-results-model.md` 第 4–9、11–12 节(注册表、窄表、文档缓存)、`network-facts-statistics-design.md` 的表集合(它的**原则**——自然粒度、窗口派生、哈希快照、PCE 补发——全部保留)。保留:区间推导(`availability_intervals`,成为 `ana.service_health_event` 的构建器)与它的对拍;`network-facts-fact-to-table-mapping.md` 的覆盖清单(章节到来源事实的归属,表名按本文的新名)。
+
+## 11. 验证状态(2026-10-07)
+
+**做了什么**:`salasim_gmpls_backend/db/schema/*.sql`(9 个文件,8 个 schema,约 800 行 DDL,Postgres 14),`db/tests/smoke.sql`,以及 `.claude/pg-verify.sh`、`.claude/pg-mutate.sh`——在**预览服务器进程**里(不受 Bash 沙箱限制)用 `initdb` 起一个一次性的 Postgres 14.17,应用 schema 并跑冒烟测试。
+
+**结果**:schema 应用成功;冒烟测试通过;**15 个变异(破坏一条期望值或 schema 里的一条规则)全部被抓到**,基线不被破坏。冒烟测试断言的内容:
+- 同一毫秒的转移事件都保留;迟到事件使中断区间拆成两段;当前状态 = 按 `(at_ms, seq)` 最后一条。
+- make-before-break 路径:恰好一次改路,首次安装不算。
+- 故障 → 告警 → LSP 中断:检测时延 = 900 ms,恢复时间 = 9000 ms,中断时长 = 8000 ms,注入之前的抖动不被计入。
+- 业务可用性是任意窗口上的查询(包括既不在帧边界、以故障为中心的窗口),`STOPPED` 不算观测时间。
+- 路径时延按"当时的"链路时延求和,未知的跳被计数而不是隐藏。
+- 累计计数器跨 epoch 重启:7 + 3,不是 7 − 9。
+- 幂等接收(`new`/`duplicate`/`conflict`);重叠的接触、一跳的路径、无结果却已结束的事务、匿名观测者、未知 LSP 的状态、长度不符的直方图,全部被约束拒绝。
+- 整个 run 通过删分区删除,所有表对该 run 清空。
+
+**没有验证的(请不要把"冒烟通过"读成更多)**:
+- **并发**:同一 LSP 的路径事件并发写入、构建器与摄入并发(摄入规格里列了咨询锁方案,没有实测)。
+- **体量与性能**:所有测试是几十行;`lead()` 视图、`lsp_outage`、`path_delay_us` 在每 run 几万到几十万行下的表现**未测**;分区在数百个 run 下的表现未测。
+- **摄入代码**:没有写。映射表里"未核实"的字段(`kind`/`result` 映射、复用事件、跨快照窗口的事务边界)需要对照 PCE 真实发射核对。
+- **往返对拍**:"旧账本 → 新事件 → 推导"等于"旧账本 → 推导"的测试没写,它是整套映射的裁判。
+- **只在 Postgres 14.17 上**跑过;`btree_gist` 与 `GENERATED ... IDENTITY` 在更高版本应无差别,但没试。
+
