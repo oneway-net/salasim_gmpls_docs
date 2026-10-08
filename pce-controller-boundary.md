@@ -87,16 +87,18 @@ D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张�
 | **M2** | 父 PCE 的 NETCONF RPC `create-services` / `delete-services`,受理语义 | **完成**,6 个进程内 NETCONF 测试,pce `028d089` |
 | **M3** | MDSC:RESTCONF 的 `provision-services` / `delete-services`,转发给父 PCE;**参考场景的开通与删除改走它** | **完成**(不含 `query-services` 与 `wait=outcome`),7+2 个单测,controller `0cacff9`;参考场景 27 项全过 |
 | M3b | `query-services`、`wait=outcome`:需要 PCE 提供运行态 `services` 容器 | 未开始 |
-| **M4** | 域内业务:MDSC → PNC → 域 PCE;端点到域的路由表(清单需带 router-id 与 domain) | 未开始 |
+| **M4** | 域内业务:MDSC → PNC → 域 PCE;端点到域的路由表(清单带端点) | **完成**:域 PCE 同样提供 `create/delete-services`(pce `b1f9e10`、`8b9935a`);PNC 在 MPI 上转发,不翻译(controller `da01c1a`);MDSC 按清单的 `endpoint` 表分流,未知端点拒绝;参考场景新增第 10 步,34 项全过 |
 | **M5** | 保护与分集策略上移(先决定 D1/D2 的修订) | 未开始,**需要你决定 D1/D2** |
 | **M6** | 恢复策略上移:PCE 删去 `LspRerouteBackoff` 与父侧重试,只发"需要恢复 / 无路"事件;controller 持有重试 | 未开始 |
 | **M7** | 事实与遥测独立出口 | 未开始 |
 | **M8** | 验收后删除 PCE 上的 `/md-lsps`、`/lsp/initiate`、`/protection-groups` 等 HTTP 路由与 Backend 的直接调用(后者随 P6) | 未开始 |
 
-**M1–M3 的范围和限制(已实现的部分)**:
+**M4 暴露的两个真问题**(都已修复):① 域 PCE 的创建结果用 `lspId`、父 PCE 用 `mdLspId`,只读后者会丢掉域业务的 `lsp-id`;② 域内创建的算路只有 OF=1003 走 MPLS 算法,1004(最小时延)和 1005(最小抖动)退到纯最短跳数,所以"按时延选路"的业务实际走了最少跳数。②之前没暴露,是因为以前 Backend 给域内创建带了自己算好的 `explicitEro`(C2b 里列为应当去掉的"路径提示");去掉提示后这个缺口才成了真问题。
+
+**M1–M3 的范围和限制(已实现的部分;M4 之后"所有业务都路由到父 PCE"一条已不成立,见上)**:
 
 - 只支持**一条不保护的隧道**;受保护的服务以 `service-protection-unsupported`(retry-safe)被拒绝,不会半成功。
-- 所有服务都路由到**父 PCE**(MDSC 目前只管理这一个 PCE)。同域端点走域 PCE 需要 M4。
+- 路由由清单的 `endpoint` 表决定:两端在同一个域 → 该域的 PNC(再到域 PCE),其余 → 父 PCE,清单里没有的端点 → 拒绝(`controller-unknown-endpoint`,retry-safe)。
 - 受理即返回,不等信令结束。状态在 PCE 的注册表里;没有 `query-services` 之前,验证要靠 PCE 的现有 HTTP 读接口。
 - 父 PCE 尚未挂载时,controller 返回 `controller-pce-unavailable`、`retry-safe=true`、"什么都没发送";客户端重试即可(参考场景第 4 步就是这样做的)。PCE 在请求发出后不再应答,返回 `controller-outcome-uncertain`;PCE 以"请求无效"拒绝,则当作调用者的错误抛回。
 - PCE 里的旧 HTTP 路由(`/md-lsps` 等)**还在**,等 M8 验收后再删。

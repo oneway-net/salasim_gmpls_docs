@@ -23,7 +23,7 @@ n3–n4, n1 n2 n3 n5.
 | `render.py` | writes `build/`: per-domain topology (JSON, XML, RFC 9195 native), PNC/MDSC inventories, PCE and emulator configs, `docker-compose.yml`, `expected.json` |
 | `medium_server.py` | link-plane medium (one `salasim_sim.linkplane` app per node) |
 | `run.sh` | build images, render, start in order, wait for the composed topology, stop with `down` |
-| `check.sh` | acceptance steps 1–9 (provisioning and removal go through the controller) |
+| `check.sh` | acceptance steps 1–10 (provisioning and removal go through the controller; step 10 is a service inside one domain, MDSC → PNC → domain PCE) |
 | `fault.sh` / `restore.sh` | carrier down/up on both ends of n3–n4 through the medium |
 
 ## Run
