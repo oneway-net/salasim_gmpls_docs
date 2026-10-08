@@ -207,7 +207,8 @@ def expected(s: dict) -> dict:
     return {
         "faultTarget": next(link_ids(s, l)["target"] for l in s["links"] if {l["a"], l["b"]} == set(fault)),
         "faultPorts": fault_ports,
-        "service": {**svc, "sourceRouterId": nodes[svc["source"]]["routerId"],
+        "service": {**svc, "symbolicPathName": f"service/{svc['serviceId']}/tunnel/{svc['canonicalTunnelId']}",
+                    "sourceRouterId": nodes[svc["source"]]["routerId"],
                     "destinationRouterId": nodes[svc["destination"]]["routerId"],
                     "expectedPathRouterIds": [nodes[n]["routerId"] for n in svc["expectedPath"]],
                     "expectedPathAfterFaultRouterIds": [nodes[n]["routerId"] for n in svc["expectedPathAfterFault"]]},

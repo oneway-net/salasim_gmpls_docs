@@ -4,36 +4,123 @@
   "subnet": "10.77.0.0/16",
   "gateway": "10.77.0.1",
   "domains": [
-    {"id": "d1", "number": 1, "pceDomainId": "0.0.0.1", "reachability": "10.77.1.0/24"},
-    {"id": "d2", "number": 2, "pceDomainId": "0.0.0.2", "reachability": "10.77.2.0/24"}
+    {
+      "id": "d1",
+      "number": 1,
+      "pceDomainId": "0.0.0.1",
+      "reachability": "10.77.1.0/24"
+    },
+    {
+      "id": "d2",
+      "number": 2,
+      "pceDomainId": "0.0.0.2",
+      "reachability": "10.77.2.0/24"
+    }
   ],
   "nodes": [
-    {"name": "n1", "domain": "d1", "routerId": "10.77.1.11"},
-    {"name": "n2", "domain": "d1", "routerId": "10.77.1.12"},
-    {"name": "n3", "domain": "d2", "routerId": "10.77.2.11"},
-    {"name": "n4", "domain": "d2", "routerId": "10.77.2.12"},
-    {"name": "n5", "domain": "d2", "routerId": "10.77.2.13"}
+    {
+      "name": "n1",
+      "domain": "d1",
+      "routerId": "10.77.1.11"
+    },
+    {
+      "name": "n2",
+      "domain": "d1",
+      "routerId": "10.77.1.12"
+    },
+    {
+      "name": "n3",
+      "domain": "d2",
+      "routerId": "10.77.2.11"
+    },
+    {
+      "name": "n4",
+      "domain": "d2",
+      "routerId": "10.77.2.12"
+    },
+    {
+      "name": "n5",
+      "domain": "d2",
+      "routerId": "10.77.2.13"
+    }
   ],
   "links": [
-    {"a": "n1", "aIf": 1, "b": "n2", "bIf": 1, "delayUs": 1000, "kind": "isl"},
-    {"a": "n2", "aIf": 2, "b": "n3", "bIf": 1, "delayUs": 2000, "kind": "gsl"},
-    {"a": "n3", "aIf": 2, "b": "n4", "bIf": 1, "delayUs": 1000, "kind": "isl"},
-    {"a": "n4", "aIf": 2, "b": "n5", "bIf": 1, "delayUs": 1000, "kind": "isl"},
-    {"a": "n3", "aIf": 3, "b": "n5", "bIf": 2, "delayUs": 5000, "kind": "isl"}
+    {
+      "a": "n1",
+      "aIf": 1,
+      "b": "n2",
+      "bIf": 1,
+      "delayUs": 1000,
+      "kind": "isl"
+    },
+    {
+      "a": "n2",
+      "aIf": 2,
+      "b": "n3",
+      "bIf": 1,
+      "delayUs": 2000,
+      "kind": "gsl"
+    },
+    {
+      "a": "n3",
+      "aIf": 2,
+      "b": "n4",
+      "bIf": 1,
+      "delayUs": 1000,
+      "kind": "isl"
+    },
+    {
+      "a": "n4",
+      "aIf": 2,
+      "b": "n5",
+      "bIf": 1,
+      "delayUs": 1000,
+      "kind": "isl"
+    },
+    {
+      "a": "n3",
+      "aIf": 3,
+      "b": "n5",
+      "bIf": 2,
+      "delayUs": 5000,
+      "kind": "isl"
+    }
   ],
   "bandwidthBps": 1000000000,
   "service": {
-    "symbolicPathName": "ref/svc-1/tunnel/primary",
     "serviceId": "svc-1",
     "canonicalTunnelId": "primary",
     "source": "n1",
     "destination": "n5",
     "bandwidthBps": 10000000,
-    "pathPlanning": {"candidatePathCount": 4, "qualityObjectiveOrder": ["AVG_DELAY", "AVG_HOP", "DELAY_JITTER"]},
-    "expectedPath": ["n1", "n2", "n3", "n4", "n5"],
-    "expectedPathAfterFault": ["n1", "n2", "n3", "n5"]
+    "pathPlanning": {
+      "candidatePathCount": 4
+    },
+    "expectedPath": [
+      "n1",
+      "n2",
+      "n3",
+      "n4",
+      "n5"
+    ],
+    "expectedPathAfterFault": [
+      "n1",
+      "n2",
+      "n3",
+      "n5"
+    ],
+    "pathMetrics": [
+      "delay-average",
+      "hop",
+      "delay-variation"
+    ]
   },
-  "fault": {"link": ["n3", "n4"]},
+  "fault": {
+    "link": [
+      "n3",
+      "n4"
+    ]
+  },
   "ports": {
     "pcep": 4189,
     "parentPcep": 4189,

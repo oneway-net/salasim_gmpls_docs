@@ -37,11 +37,17 @@ step "3. MDSC composed the topology (shared file + RESTCONF mount state)"
 get "http://127.0.0.1:$MDSC/restconf/data" >/dev/null && ok "MDSC RESTCONF answers" || bad "MDSC RESTCONF silent"
 get "http://127.0.0.1:$PARENT/api/v1/pce/inter-domain-links" | head -c 400 | sed 's/^/     inter-domain-links: /'; echo
 
-step "4. provision the service across both domains (parent PCE)"
-BODY=$(J "json.dumps({k: d['service'][k] for k in ('symbolicPathName','serviceId','canonicalTunnelId','sourceRouterId','destinationRouterId','bandwidthBps','pathPlanning')})")
-RESP=$(curl -s --max-time 60 -w '\n%{http_code}' -X POST -H 'Content-Type: application/json' -d "$BODY" "http://127.0.0.1:$PARENT/api/v1/pce/md-lsps")
-CODE=${RESP##*$'\n'}; echo "     HTTP $CODE: ${RESP%$'\n'*}" | head -c 600; echo
-[[ "$CODE" == 2* ]] && ok "md-lsp accepted" || { bad "md-lsp rejected"; diag parent-pce pce-d1 pce-d2; }
+step "4. provision the service across both domains (through the controller: RESTCONF on the MDSC)"
+RESTCONF="http://127.0.0.1:$MDSC/restconf/operations/salasim-service-fleet"
+restconf() { # rpc body  -> prints the HTTP status on the last line
+  curl -s --max-time 90 -w '\n%{http_code}' -X POST -H 'Content-Type: application/yang-data+json' \
+    -H 'Accept: application/yang-data+json' -d "$2" "$RESTCONF:$1"
+}
+allAdmitted() { python3 -c "import json,sys;o=json.load(sys.stdin)['salasim-service-fleet:output'];sys.exit(0 if o.get('all-admitted') else 1)"; }
+BODY=$(J "json.dumps({'salasim-service-fleet:input': {'service': [{'service-id': d['service']['serviceId'], 'source': d['service']['sourceRouterId'], 'destination': d['service']['destinationRouterId'], 'bandwidth': str(d['service']['bandwidthBps']), 'path-planning': {'optimization-metric': [{'metric-type': ('salasim-service-types:' if m == 'delay-variation' else 'ietf-te-types:') + 'path-metric-' + m} for m in d['service']['pathMetrics']], 'candidate-path-count': d['service']['pathPlanning']['candidatePathCount']}, 'tunnel': [{'tunnel-id': d['service']['canonicalTunnelId'], 'role': 'primary'}]}]}})")
+RESP=$(restconf provision-services "$BODY")
+CODE=${RESP##*$'\n'}; echo "     HTTP $CODE: ${RESP%$'\n'*}" | head -c 700; echo
+if [[ "$CODE" == 2* ]] && echo "${RESP%$'\n'*}" | allAdmitted; then ok "service admitted by the PCE through the controller"; else bad "service not admitted"; diag mdsc parent-pce pce-d1 pce-d2; fi
 
 ero() { # prints the router ids of the md-lsp ERO as reported by the parent
   get "http://127.0.0.1:$PARENT/api/v1/pce/lsps" | python3 -c "
@@ -76,5 +82,14 @@ until_ 120 "ERO avoids n3-n4 (n1 n2 n3 n5)" want_path expectedPathAfterFaultRout
 step "8. restore the link; LSP stays up on the new path"
 "$HERE/restore.sh" >/dev/null && ok "carrier up written" || bad "restore failed"
 sleep 5; want_path expectedPathAfterFaultRouterIds && ok "path stable after restore (no flap)" || echo "  NOTE: path changed after restore (acceptable if the PCE re-optimised); inspect manually"
+
+step "9. remove the service through the controller; removing it again answers removed"
+DEL=$(J "json.dumps({'salasim-service-fleet:input': {'service': [{'service-id': d['service']['serviceId'], 'source': d['service']['sourceRouterId'], 'destination': d['service']['destinationRouterId'], 'tunnel': [{'tunnel-id': d['service']['canonicalTunnelId']}]}]}})")
+RESP=$(restconf delete-services "$DEL"); CODE=${RESP##*$'\n'}; echo "     HTTP $CODE: ${RESP%$'\n'*}" | head -c 500; echo
+if [[ "$CODE" == 2* ]] && echo "${RESP%$'\n'*}" | allAdmitted; then ok "delete admitted"; else bad "delete not admitted"; diag mdsc parent-pce; fi
+gone() { ! get "http://127.0.0.1:$PARENT/api/v1/pce/lsps" | grep -q "$SYMBOL"; }
+until_ 90 "the LSP is gone from the parent PCE" gone
+RESP=$(restconf delete-services "$DEL"); CODE=${RESP##*$'\n'}
+if [[ "$CODE" == 2* ]] && echo "${RESP%$'\n'*}" | grep -q '"removed"'; then ok "a second delete answers removed"; else bad "second delete did not answer removed ($CODE)"; fi
 
 echo; [[ $FAIL -eq 0 ]] && echo "RESULT: PASS" || echo "RESULT: FAIL"; exit $FAIL
