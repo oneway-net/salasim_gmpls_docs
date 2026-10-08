@@ -95,6 +95,12 @@ def domain_topology_xml(s: dict, domain: str) -> str:
            f"\t\t\t<ipv4_address>{net}</ipv4_address>", f"\t\t\t<prefix>{prefix}</prefix>", "\t\t</reachability_entry>"]
     for n in domain_nodes(s, domain):
         out.append(f"\t\t<node><router_id>{n['routerId']}</router_id></node>")
+    # Label-space defaults, as the Backend's scenario compiler emits them (_append_edge_common): vestigial for MPLS, but
+    # MPLS_CrossSnapshot_AlgorithmPreComputation.setTEDB dereferences the WSON information unguarded, and without it the
+    # algorithm is left with no precomputation and every request fails with NPE.
+    out += ["\t\t<edgeCommon>", "\t\t\t<AvailableLabels>", '\t\t\t\t<LabelSetField type="4">',
+            "\t\t\t\t\t<numLabels>100</numLabels>", '\t\t\t\t\t<baseLabel grid="3" cs="5" n="0"></baseLabel>',
+            "\t\t\t\t</LabelSetField>", "\t\t\t</AvailableLabels>", "\t\t</edgeCommon>"]
     bw_mbps = s.get("bandwidthBps", 1_000_000_000) // 1_000_000
     for link in s["links"]:
         na, nb = s["_nodes"][link["a"]], s["_nodes"][link["b"]]
