@@ -36,5 +36,5 @@
         <OSPFTCPPort>7762</OSPFTCPPort>
     </OSPF>
     <layer type="mpls" default="true"></layer>
-    <algorithmRule of="1003" svec="false" name="mpls.MPLS_MinTH_Algorithm" isParentPCEAlgorithm="false" isWSONAlgorithm="false" isSSONAlgorithm="false"/>
+    <algorithmRule of="1003" svec="false" name="mpls.MPLS_CrossSnapshot_Algorithm" isParentPCEAlgorithm="false" isWSONAlgorithm="false" isSSONAlgorithm="false"/>
 </config>
