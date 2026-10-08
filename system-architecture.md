@@ -353,6 +353,8 @@ salasim_sim/            仿真模块
 
 > **参考场景(2026-10-08,已提交本地 framework-enhancement,未推送;用户指示"先写启动脚本和检查步骤")**:`docs/reference-scenario/` 把"一条跨域业务、一次链路故障"写成可运行的场景:2 个域、5 个节点,`scenario.json` 是唯一输入,`render.py` 生成各域拓扑(JSON/XML/RFC 9195 native)、PNC/MDSC 清单、PCE 与 emulator 配置和 `docker-compose.yml`;`medium_server.py` 提供链路平面;`run.sh` 按依赖顺序启动(medium → 节点 → 域 PCE → PNC+MDSC → 等 MDSC 写出 `composed-topology.json` → 父 PCE);`check.sh` 八步验收(健康、PCEP 会话、MDSC 组合拓扑、跨域 LSP 建立且 ERO 为 n1-n2-n3-n4-n5、n3/n4 载波 down、信令通知到 PCE、父 PCE 重路由到 n1-n2-n3-n5、恢复不抖动);`fault.sh`/`restore.sh` 经 medium 注入/撤销故障。**离线已验证**:三个 `ReferenceScenarioFixturesTest`(pce/emulator/controller)用真实加载器解析全部渲染产物,medium 进程内应答。**未验证**:沙箱不能运行 Docker,compose 接线、启动时序、`check.sh` 里 grep 的日志模式与读取的 PCE API JSON 形状都没有真实跑过;已知缺口:父 PCE 必须在组合拓扑文件出现之后启动(启动顺序依赖)。该场景跑通之前,不推送/部署,也不再做破坏性删除。
 
+> **PCE 与 controller 的职责边界(2026-10-08,用户采纳"根据你的建议,做迁移";代码尚未开始迁移)**:PCE 承担的管控功能偏多——`parentPCE` 包 2.3 万行(保护组、业务开通、重路由重试与退避、事实遥测、业务级准入),`PceApiServer` 37 个 HTTP 端点,业务开通入口直接在父 PCE 上,controller 在主路径上只管拓扑。边界定为:**PCE 回答"有没有路、怎么走、把这条 LSP 建起来",controller 决定"应该有哪些业务、失败了怎么办"**。保留在 PCE:算路、TED、LSP-DB、有状态 PCEP、H-PCE 协作、对一次故障的路径重算;上移到 MDSC:业务意图与开通入口(RESTCONF,模型 `salasim-service`)、重试策略、保护与分集策略、业务级准入;事实遥测改独立出口。PCE 仍是独立进程(不是 controller 的一部分,也不是 sidecar),与 PNC 一对一配对部署。迁移沿用 `service-provisioning-inventory.md`(C2b)的盘点与 D1–D14,但去掉 run 语义(`simulator-run-id`、过期 run 围栏、按 run 清空注册表),入口改为 controller 的 RESTCONF,Backend 适配并入 P6;分 M0–M8 九步,每步单独在参考场景上验证,详见 `pce-controller-boundary.md`。迁移前提:参考场景第 7 步(故障恢复)先跑通——现状是第 1–6 步通过,父 PCE 已启动重路由,`BREAK_THEN_MAKE` 以 `unconfirmed` 失败。
+
 与 `architecture-evolution-design.md` 的关系:W1(Java 25)、W2(锁与并发,与 P1/P2 合并)、W4(JetStream/Postgres,与 P3 合并)继续有效;W3、W5、W6 中与本文冲突的部分已在该文头部标注取代。
 
 ## 6. 待决项与风险
