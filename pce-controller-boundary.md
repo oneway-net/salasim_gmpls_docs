@@ -127,8 +127,8 @@ D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张�
 | 阶段 | 内容 | 验证 |
 |---|---|---|
 | **A** | **通知通路**:PCE 在每次隧道状态变化时发 `service-state-changed`;controller 订阅(监听 + `create-subscription`),PNC 把域 PCE 的通知转发到自己的 MPI | **完成并验证**(2026-10-09,参考场景 36 项全过):C1-0 spike 结论为肯定——controller 能从已挂载的 PCE 收到自定义的 RFC 5277 通知,也能经 PNC 转发收到。pce `ecbe054`、controller `3f2dc26`。MDSC 目前只把事件记日志,阶段 C 的保护管理器接手 |
-| **B** | **PCE 侧**:服务模型加 `tunnel/diverse-from` + `diversity`;一个业务的多条隧道可分次受理(注册表改为服务级条目 + 隧道级状态);`query-services` RPC;单隧道的备用角色 | 单测 + 进程内 NETCONF 测试 |
-| **C** | **controller 侧**:`provision-services` 接受带 `protection` 的业务并展开(隧道 id 由 controller 取:`primary`、`standby`);保护管理器(顺序、降级、选择、回切);文件存储;`query-services`(controller 级) | 单测 + 参考场景新增一个 d2 内的保护业务(n3→n5:主 n3-n4-n5,备直连 n3-n5,链路分集) |
+| **B** | **PCE 侧**:服务模型加 `tunnel/diverse-from` + `diversity`;一个业务的多条隧道可分次受理(注册表改为服务级条目 + 隧道级状态);`query-services` RPC;单隧道的备用角色 | 单测 + 进程内 NETCONF 测试 |(2026-10-09 提交,本地:pce `f29458f`+`f2f0a9d`、yang `80ac986`;PCE 60 项测试过,未在测试机跑)
+| **C** | **controller 侧**:`provision-services` 接受带 `protection` 的业务并展开(隧道 id 由 controller 取:`primary`、`standby`);保护管理器(顺序、降级、选择、回切);文件存储;`query-services`(controller 级) | 单测 + 参考场景新增一个 d2 内的保护业务(n3→n5:主 n3-n4-n5,备直连 n3-n5,链路分集) |(2026-10-09 提交,本地:controller `8c43108`+`38273c7`、yang `c13f0ce`;已做:保护管理器(状态机、文件存储、25 项测试)、`provision-services`/`delete-services` 接入、`PceTunnelPort`、MDSC 装配。**未做**:fleet 级 `query-services`;**缺口**:PCE 从不把隧道状态报成 `down`,管理器没有切换触发源,需要 PCE 按 LSP 状态(PCRpt O 标志)报 `down`/`active`,这是阶段 D 的前置)
 | **D** | 参考场景:主链路故障 → 选择切到备;恢复 → WTR 后回切;重启 controller → 状态续上 | 参考场景新增步骤 |
 | **E(= M6 的删除部分)** | 删 PCE 的保护注册表与相关路由;拆 `ParentMdLspReroute`(算新路径留下,重试策略迁出) | 全部现有 PCE 测试 + 参考场景 |
 
