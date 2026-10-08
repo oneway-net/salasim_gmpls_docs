@@ -25,7 +25,7 @@ for p in $PARENT $D1 $D2; do get "http://127.0.0.1:$p/api/v1/health" >/dev/null 
 for i in 1 2 3 4 5; do get "http://127.0.0.1:$((NODEBASE + i))/api/v1/health" >/dev/null && ok "n$i healthy" || bad "n$i unhealthy"; done
 
 step "2. PCEP sessions (each domain PCE sees its PCCs; parent sees both children)"
-sessions() { get "http://127.0.0.1:$1/api/v1/pce/sessions" | python3 -c "import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get('sessions',d)))"; }
+sessions() { get "http://127.0.0.1:$1/api/v1/pce/sessions" | python3 -c "import re,sys;print(len(set(re.findall(r'10\\.77\\.\\d+\\.\\d+', sys.stdin.read()))))"; }
 n1=$(sessions $D1) ; [[ "${n1:-0}" -ge 2 ]] && ok "pce-d1 sessions=$n1 (>=2)" || bad "pce-d1 sessions=${n1:-?} (want >=2)"
 n2=$(sessions $D2) ; [[ "${n2:-0}" -ge 3 ]] && ok "pce-d2 sessions=$n2 (>=3)" || bad "pce-d2 sessions=${n2:-?} (want >=3)"
 get "http://127.0.0.1:$PARENT/api/v1/parent-pce/peers" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d)" | sed 's/^/     peers: /'

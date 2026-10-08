@@ -291,6 +291,8 @@ def compose(s: dict) -> str:
                 "ACTUAL_TOPOLOGY_FILE": f"/scenario/domains/{did}/topology.json",
                 # the PNC reports link state for the network salasim:<domain id of the inventory>
                 "ACTUAL_TOPOLOGY_NETWORK_ID": f"salasim:{did}",
+                # fail-closed PCC admission: only the router ids of this domain's nodes may open a session
+                "PCC_ROUTER_INVENTORY_FILE": f"/scenario/domains/{did}/pcc-router-ids.json",
                 "PCE_NETCONF_SSH_PASSWORD": pw, "JAVA_OPTS": "-Xms128m -Xmx512m"})
     svc("parent-pce", f"salasim/pce:{IMAGE_TAG}", None, ports=[(18080, p["pceApi"])],
         volumes=["shared:/var/salasim/shared:ro"],
@@ -344,6 +346,8 @@ def main() -> int:
         did = d["id"]
         write(out / "domains" / did / "topology.json", json.dumps(domain_topology_json(s, did), indent=2) + "\n")
         write(out / "domains" / did / "topology.xml", domain_topology_xml(s, did))
+        write(out / "domains" / did / "pcc-router-ids.json",
+              json.dumps([{"router_id": n["routerId"]} for n in domain_nodes(s, did)], indent=2) + "\n")
         write(out / "domains" / did / "native.json", json.dumps(domain_native_json(s, did), indent=2) + "\n")
     for name, inv in inventories(s).items():
         write(out / "inventories" / f"{name}.json", json.dumps(inv, indent=2) + "\n")
