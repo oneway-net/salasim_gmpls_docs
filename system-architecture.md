@@ -325,6 +325,8 @@ salasim_sim/            仿真模块
 
 > **P2 实施状态(2026-10-08,本地)**:已完成 ① 注入 `Clock`(`net.salasim.pce.model.Clock`、`ManualClock`),由 `PceContext` 持有;超时/陈旧判断不再用"扣除暂停的墙钟"(已删,含 `SimulationRun` 的暂停计时);② `net.salasim.pce.plan`:`ContactPlan`(TVR 内存形式)+ `PlanReconciler`(EARLY/LATE/MISSING/UNPLANNED,实际优先,不碰 TED),12 个无头确定性测试。**未做(与 M1 一起切换,因为会让现有按帧驱动的参考场景失效)**:重试阶梯与 TTL 从"切片"改毫秒/拓扑版本(`RunRuntimeConfig.RecoveryConfig`、YANG、Backend 编译器要同步);TED 只由实际链路状态报告更新、接触计划调度器替换时钟线程、删除 `AutonomousClockThread`/`FrameIngestion`/`SimulationRun` 帧库存;`PlanReconciler` 接入链路状态报告入口与计划安装 RPC。
 
+> **M1 实施状态(2026-10-08,本地,未推送;未达验收)**:五段新路径已各自建成并在**边界**上测试,**没有整体接通,也没有端到端运行**:① 设备侧(emulator `…node.port`):`PortDriver` + `MediumClient`(SSE)把介质载波变成接口 oper 状态,YANG-push 一次推 `oper-status` + `last-change`,无 run/锚点/故障计划;② PNC(controller):`ActualLinkStateReporter` 把该推送变成 `salasim-link-state` 的 `report-link-state`(network-id、每网络 generation、link-id、observer);③ PCE:`ActualTopology`(代际排序)+ `ActualTopologyService` + `MplsTopologyPublisher`(基础拓扑减去已报 down 的链路,无锁快照发布)+ `LinkDownRecovery`,RPC 已注册;④ sim(backend `salasim_sim`):`LinkPlane`(介质契约的服务端)+ 回放器(一次会话一个加速比,记 planned/actual 墙钟)。**未接通的原因**:无 run 的 PCE 在重路由时抛 `runtimeConfig.recovery required`(退避仍按切片、配置仍随 run 下发)——即 P2 余项;另需无 run 的启动拓扑(存储绑定的 JSON)。**未做**:YANG-push 通告时延与量的实测(沙箱不能开端口)、事实入库与窗口结果(沙箱不能跑 Postgres/NATS)。旧的按帧路径(`salasim-actn:report-link-state`、`LinkStateReporter`、时钟线程)仍在,切换后同一变更集删除。
+
 与 `architecture-evolution-design.md` 的关系:W1(Java 25)、W2(锁与并发,与 P1/P2 合并)、W4(JetStream/Postgres,与 P3 合并)继续有效;W3、W5、W6 中与本文冲突的部分已在该文头部标注取代。
 
 ## 6. 待决项与风险
