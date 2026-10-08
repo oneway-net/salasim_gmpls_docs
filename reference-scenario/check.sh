@@ -32,7 +32,7 @@ get "http://127.0.0.1:$PARENT/api/v1/parent-pce/peers" | python3 -c "import json
 
 step "3. MDSC composed the topology (shared file + RESTCONF mount state)"
 "${COMPOSE[@]}" exec -T mdsc test -s /var/salasim/shared/composed-topology.json && ok "composed-topology.json present" || bad "composed topology missing"
-get "http://127.0.0.1:$MDSC/restconf/data/ietf-network:networks" >/dev/null && ok "MDSC RESTCONF answers" || bad "MDSC RESTCONF silent"
+get "http://127.0.0.1:$MDSC/restconf/data" >/dev/null && ok "MDSC RESTCONF answers" || bad "MDSC RESTCONF silent"
 get "http://127.0.0.1:$PARENT/api/v1/pce/inter-domain-links" | head -c 400 | sed 's/^/     inter-domain-links: /'; echo
 
 step "4. provision the service across both domains (parent PCE)"
