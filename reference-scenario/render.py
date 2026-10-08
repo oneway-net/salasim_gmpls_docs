@@ -253,7 +253,7 @@ def compose(s: dict) -> str:
         L.extend(extra or [])
         L.append("")
 
-    svc("medium", "python:3.12-slim", None,
+    svc("medium", "docker.m.daocloud.io/library/python:3.12-slim", None,
         environment={"PYTHONPATH": "/backend-src", "MEDIUM_PORT": str(p["medium"]), "SCENARIO": "/scenario/scenario.json",
                      "PIP_ROOT_USER_ACTION": "ignore"},
         ports=[(18099, p["medium"])],
