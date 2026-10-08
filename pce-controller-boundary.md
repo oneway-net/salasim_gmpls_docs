@@ -60,6 +60,22 @@ C2b 写于仿真移除之前。以下前提作废或改变:
 
 D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张力:顺序和"是否降级"是策略,**倾向上移**;"建第二条要与第一条分集"是路径约束,留在 PCE。M5 前一并决定。
 
+## 4a. 已确认的决定(用户 2026-10-09,交互式确认)
+
+| 问题 | 决定 | 影响 |
+|---|---|---|
+| 保护业务由谁展开、定顺序和降级(C2b 的 D1/D2) | **controller 展开并定顺序与降级**;PCE 只执行"与第一条分集"这一条路径约束 | M5:`ProtectionGroupRegistry`(1046 行)与 `ProtectionDiversity` 迁出;PCE 的算路接口保留"分集于某条参考路径"的约束 |
+| 端到端 LSP 复用池 `EndToEndLspReuseRegistry` | **归 controller**(业务层管理隧道与物理连接的绑定) | M9 |
+| 遥测与证据 | **按性质拆**:真实网络也会有的 LSP 生命周期事实 → 核心的独立出口(controller 一侧,进核心历史库);仿真实验专用的 → **仿真模块**或删除;`RouteSelectionEvidence`(候选与所选路径)作为核心审计信息保留中性版 | M7 |
+| 下一步 | **M4 域内业务** | 进行中 |
+
+**需要迁到平台仿真模块(而不是 controller)的部分**(按架构 §2.1"结果与保真度"的定义:窗口、切片、可靠性/恢复/可用性指标、保真度比):
+
+- `TunnelTelemetryRegistry`:注释写明是"PCEP 符号名与 **backend Tunnel 身份**的 run-local 映射"。核心不应知道 Backend 的身份;M1 之后符号名由 PCE 按 `service/<id>/tunnel/<id>` 推导,映射不再需要 → **删除**。
+- `SignalingOperationTelemetry`:"为 Analytics 准备的 run-local 计数器" → 指标分类属于仿真的结果层;核心只提供通用的控制面时延直方图(OpenTelemetry)→ **迁仿真模块 / 删除**。
+- `net.salasim.pce.plan` 不迁整包:架构 §238 把"预测式预计算、**计划对账**与 `plan-deviation`"划给 PCE,只有**接触计划的存储与分发**归 controller。M10 因此改为只迁存储与分发。
+- 仿真模块自己负责的(PCE 里没有):场景编译、回放器、链路平面、节点编排、窗口与保真度。回放器需要 controller 北向提供接触计划安装与业务提交,这两条入口正是 M3 与 M10 在做的。
+
 ## 5. 迁移步骤
 
 每一步单独提交、单独在参考场景上验证,不并行。状态截至 2026-10-09。
@@ -99,8 +115,8 @@ D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张�
 | 保护组与分集策略 | `ProtectionGroupRegistry` 1046、`ProtectionDiversity` 223 | M5 |
 | 事实与遥测 | `TunnelUpdateEmitter` 1083、`LspFactSink`、`SignalingOperationTelemetry`、`PathTelemetryResolver`、`RerouteApplyEvidence`、`RouteSelectionEvidence`、`TunnelTelemetryRegistry` | M7 |
 | 业务级准入与限流 | `ParentMplsAdmissionCoordinator` 568、`ParentPcUpdAdmissionController` 107 | 随 M3 / M6;PCE 只保留对自己算路队列的保护 |
-| **端到端 LSP 复用池**(原计划漏列) | `EndToEndLspReuseRegistry` 727 | **M9** |
-| **计划与预测**(原计划漏列) | `net.salasim.pce.plan`:`ContactPlan`、`PlanReconciler`、`RoutePlanning*`,约 350 | **M10**:计划由 controller 持有,PCE 只接收约束 |
+| **端到端 LSP 复用池**(原计划漏列;已定归 controller) | `EndToEndLspReuseRegistry` 727 | **M9** |
+| **接触计划的存储与分发**(原计划漏列) | `net.salasim.pce.plan.ContactPlan` 等;预测式预计算与计划对账**留在 PCE**(架构 §238) | **M10**:只迁存储与分发 |
 | HTTP 北向 API | `PceApiServer` 25 个路径 | M8:删业务类六条与演示调试四条;保留只读运行态;`/events/stream` 并入 M7;PCE 北向最终只剩 NETCONF/YANG |
 
 **M6 的前置拆分**:`ParentMdLspReroute` 同时含"算新路径并下发 PCUpd"(留在 PCE)和"何时重试、退避、放弃"(迁出),在一个 4600 行的类里。必须先把两者拆开并各自带测试,再迁策略,否则会把算路一起带走。历次审计修出来的并发和顺序细节集中在这几个类里,只能一块块带着测试搬。
