@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+    <PCEServerPort>__PCE_SERVER_PORT__</PCEServerPort>
+    <PCEManagementPort>__PCE_MANAGEMENT_PORT__</PCEManagementPort>
+    <LocalPCEAddress>__LOCAL_PCE_ADDRESS__</LocalPCEAddress>
+    <LocalPCEAddressForParent>__LOCAL_PCE_ADDRESS_FOR_PARENT__</LocalPCEAddressForParent>
+    <ConnectTimer>5</ConnectTimer>
+    <ConnectMaxRetry>120</ConnectMaxRetry>
+    <OpenWait>60</OpenWait>
+    <parentPCE>
+        <parentPCEAddress>__PARENT_PCE_ADDRESS__</parentPCEAddress>
+        <parentPCEPort>__PARENT_PCE_PORT__</parentPCEPort>
+    </parentPCE>
+    <PCEServerLogFile>PCEServer.log</PCEServerLogFile>
+    <PCEPParserLogFile>PCEPParserServer.log</PCEPParserLogFile>
+    <OSPFParserLogFile>OSPFParser.log</OSPFParserLogFile>
+    <isStateful>true</isStateful>
+    <PCCRequestsProcessors>1</PCCRequestsProcessors>
+    <ParentPCERequestProcessors>2</ParentPCERequestProcessors>
+    <networkDescriptionFile>__DOMAIN_TOPOLOGY_FILE__</networkDescriptionFile>
+    <domainId>__DOMAIN_ID__</domainId>
+    <nodelay>true</nodelay>
+    <reservation>true</reservation>
+    <optimizedRead>false</optimizedRead>
+    <analyzeRequestTime>true</analyzeRequestTime>
+    <multilayer>true</multilayer>
+    <multidomain>__PCE_MULTIDOMAIN__</multidomain>
+    <setTraces>true</setTraces>
+    <totalTopologuNums>__TOTAL_TOPOLOGY_NUMS__</totalTopologuNums>
+    <OSPF>
+        <OSPFSession>false</OSPFSession>
+        <OSPFListenerIP>127.0.0.1</OSPFListenerIP>
+        <OSPFMulticast>false</OSPFMulticast>
+        <OSPFUnicast>false</OSPFUnicast>
+        <OSPFTCPSession>false</OSPFTCPSession>
+        <OSPFTCPPort>7762</OSPFTCPPort>
+    </OSPF>
+    <layer type="mpls" default="true"></layer>
+    <algorithmRule of="1003" svec="false" name="mpls.MPLS_MinTH_Algorithm" isParentPCEAlgorithm="false" isWSONAlgorithm="false" isSSONAlgorithm="false"/>
+</config>

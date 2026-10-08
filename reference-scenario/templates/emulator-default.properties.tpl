@@ -1,0 +1,12 @@
+PCEAddress = __PCE_ADDRESS__
+PCEPPort = __PCEP_PORT__
+flexi = false
+mpls = true
+RSVPMode = true
+isMultiDomain = true
+SetTraces = true
+nodePcepServerPort = __NODE_PCEP_SERVER_PORT__
+nodeManagementPort = __NODE_MANAGEMENT_PORT__
+nodeFastPcepPort = __NODE_FAST_PCEP_PORT__
+totalTopologuNums = __TOTAL_TOPOLOGY_NUMS__
+emulatorTopologyAware = __EMULATOR_TOPOLOGY_AWARE__
