@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import pathlib
 import shutil
 
@@ -293,7 +294,9 @@ def compose(s: dict) -> str:
                 "ACTUAL_TOPOLOGY_NETWORK_ID": f"salasim:{did}",
                 # fail-closed PCC admission: only the router ids of this domain's nodes may open a session
                 "PCC_ROUTER_INVENTORY_FILE": f"/scenario/domains/{did}/pcc-router-ids.json",
-                "PCE_NETCONF_SSH_PASSWORD": pw, "JAVA_OPTS": "-Xms128m -Xmx512m"})
+                "PCE_NETCONF_SSH_PASSWORD": pw,
+                "JAVA_OPTS": "-Xms128m -Xmx512m" + (" -Dlog4j.configurationFile=/scenario/log4j2-debug.xml"
+                                                    if os.environ.get("REF_PCE_DEBUG") else "")})
     svc("parent-pce", f"salasim/pce:{IMAGE_TAG}", None, ports=[(18080, p["pceApi"])],
         volumes=["shared:/var/salasim/shared:ro"],
         environment={
@@ -302,7 +305,9 @@ def compose(s: dict) -> str:
             "PARENT_PCE_ADDRESS": "0.0.0.0", "PARENT_TOPOLOGY_FILE": "/var/salasim/shared/composed-topology.json",
             "CHILD_1_SERVICE": ad["pce-d1"], "CHILD_1_DOMAIN_ID": s["domains"][0]["pceDomainId"],
             "CHILD_2_SERVICE": ad["pce-d2"], "CHILD_2_DOMAIN_ID": s["domains"][1]["pceDomainId"],
-            "PCE_NETCONF_SSH_PASSWORD": pw, "JAVA_OPTS": "-Xms128m -Xmx512m"})
+            "PCE_NETCONF_SSH_PASSWORD": pw,
+                "JAVA_OPTS": "-Xms128m -Xmx512m" + (" -Dlog4j.configurationFile=/scenario/log4j2-debug.xml"
+                                                    if os.environ.get("REF_PCE_DEBUG") else "")})
     for d in s["domains"]:
         did = d["id"]
         svc(f"pnc-{did}", f"salasim/controller:{IMAGE_TAG}", None, command="pnc",
@@ -352,6 +357,10 @@ def main() -> int:
     for name, inv in inventories(s).items():
         write(out / "inventories" / f"{name}.json", json.dumps(inv, indent=2) + "\n")
     write(out / "credentials" / "netconf-password", s["netconfPassword"])
+    if os.environ.get("REF_PCE_DEBUG"):
+        # the PCE's own logging configuration with the PCEServer logger at DEBUG (routing no-path diagnosis, PCEP detail)
+        base = (HERE.parent.parent / "salasim_gmpls_pce" / "src" / "main" / "resources" / "log4j2.xml").read_text()
+        write(out / "log4j2-debug.xml", base.replace('name="PCEServer" level="INFO"', 'name="PCEServer" level="DEBUG"'))
     write(out / "expected.json", json.dumps(expected(s), indent=2) + "\n")
     write(out / "docker-compose.yml", compose(s) + "\n")
     print(f"rendered {out}")
