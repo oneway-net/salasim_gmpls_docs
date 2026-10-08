@@ -44,34 +44,61 @@ restconf() { # rpc body  -> prints the HTTP status on the last line
     -H 'Accept: application/yang-data+json' -d "$2" "$RESTCONF:$1"
 }
 allAdmitted() { python3 -c "import json,sys;o=json.load(sys.stdin)['salasim-service-fleet:output'];sys.exit(0 if o.get('all-admitted') else 1)"; }
-BODY=$(J "json.dumps({'salasim-service-fleet:input': {'service': [{'service-id': d['service']['serviceId'], 'source': d['service']['sourceRouterId'], 'destination': d['service']['destinationRouterId'], 'bandwidth': str(d['service']['bandwidthBps']), 'path-planning': {'optimization-metric': [{'metric-type': ('salasim-service-types:' if m == 'delay-variation' else 'ietf-te-types:') + 'path-metric-' + m} for m in d['service']['pathMetrics']], 'candidate-path-count': d['service']['pathPlanning']['candidatePathCount']}, 'tunnel': [{'tunnel-id': d['service']['canonicalTunnelId'], 'role': 'primary'}]}]}})")
-# The parent PCE is mounted by the MDSC a few seconds after it starts. Until then the controller refuses with
-# controller-pce-unavailable and retry-safe=true ("nothing was sent"): a client that sees it simply asks again.
-ADMITTED=0
-for attempt in $(seq 1 30); do
-  RESP=$(restconf provision-services "$BODY")
-  CODE=${RESP##*$'\n'}; JSONBODY=${RESP%$'\n'*}
-  if [[ "$CODE" == 2* ]] && echo "$JSONBODY" | allAdmitted; then ADMITTED=1; break; fi
-  echo "$JSONBODY" | grep -q '"controller-pce-unavailable"' || break
-  echo "     attempt $attempt: the controller has not mounted the PCE yet (retry-safe), asking again"; sleep 3
-done
-echo "     HTTP $CODE: $JSONBODY" | head -c 700; echo
-if [[ $ADMITTED -eq 1 ]]; then ok "service admitted by the PCE through the controller"; else bad "service not admitted"; diag mdsc parent-pce pce-d1 pce-d2; fi
+# the request body of a service of expected.json (key: service | intraService; mode: create | delete)
+mkbody() {
+  python3 - "$EXP" "$1" "$2" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))[sys.argv[2]]
+svc = {'service-id': d['serviceId'], 'source': d['sourceRouterId'], 'destination': d['destinationRouterId']}
+if sys.argv[3] == 'create':
+    svc['bandwidth'] = str(d['bandwidthBps'])
+    svc['path-planning'] = {'optimization-metric': [{'metric-type': ('salasim-service-types:' if m == 'delay-variation'
+        else 'ietf-te-types:') + 'path-metric-' + m} for m in d['pathMetrics']],
+        'candidate-path-count': d['pathPlanning']['candidatePathCount']}
+    svc['tunnel'] = [{'tunnel-id': d['canonicalTunnelId'], 'role': 'primary'}]
+else:
+    svc['tunnel'] = [{'tunnel-id': d['canonicalTunnelId']}]
+print(json.dumps({'salasim-service-fleet:input': {'service': [svc]}}))
+PY
+}
+# A target is mounted by the controller a few seconds after it starts. Until then the controller refuses with
+# controller-pce-unavailable / controller-pnc-unavailable and retry-safe=true ("nothing was sent"): a client asks again.
+provision() { # key -> LAST holds the answer; succeeds when the service was admitted
+  local body attempt resp code
+  body=$(mkbody "$1" create); LAST=""
+  for attempt in $(seq 1 30); do
+    resp=$(restconf provision-services "$body"); code=${resp##*$'\n'}; LAST=${resp%$'\n'*}
+    if [[ "$code" == 2* ]] && echo "$LAST" | allAdmitted; then return 0; fi
+    echo "$LAST" | grep -q '"controller-p[a-z]*-unavailable"' || return 1
+    echo "     attempt $attempt: the controller has not mounted the target yet (retry-safe), asking again"; sleep 3
+  done
+  return 1
+}
+remove() { # key -> LAST holds the answer; succeeds when the delete was admitted
+  local resp code; resp=$(restconf delete-services "$(mkbody "$1" delete)"); code=${resp##*$'\n'}; LAST=${resp%$'\n'*}
+  [[ "$code" == 2* ]] && echo "$LAST" | allAdmitted
+}
+routedTo() { # owner device: the first result says where the service went
+  echo "$LAST" | python3 -c "import json,sys;r=json.load(sys.stdin)['salasim-service-fleet:output']['result'][0];sys.exit(0 if (r.get('owner'),r.get('pce'))==(sys.argv[1],sys.argv[2]) else 1)" "$1" "$2"
+}
+if provision service; then ok "service admitted by the PCE through the controller"; else bad "service not admitted"; diag mdsc parent-pce pce-d1 pce-d2; fi
+echo "     $LAST" | head -c 700; echo
+routedTo core ref-pce-core && ok "routed to the parent PCE (owner core)" || bad "not routed to the parent PCE"
 
-ero() { # prints the router ids of the md-lsp ERO as reported by the parent
-  get "http://127.0.0.1:$PARENT/api/v1/pce/lsps" | python3 -c "
+ero() { # [port] [symbol]: the router ids of that LSP's ERO, as the PCE on that port reports it
+  get "http://127.0.0.1:${1:-$PARENT}/api/v1/pce/lsps" | python3 -c "
 import json,sys,re
-d=json.load(sys.stdin); text=json.dumps(d)
+d=json.load(sys.stdin)
 ip=re.compile(r'10\.77\.\d+\.\d+')
-want='$SYMBOL'
+want=sys.argv[1]
 items=d if isinstance(d,list) else d.get('lsps',d.get('items',[]))
 for it in items:
     if want in json.dumps(it):
         print(' '.join(dict.fromkeys(ip.findall(json.dumps(it.get('ero',it.get('path',it)))))))
         break
-"; }
-want_path() { # file-key  -> compares set+order of router ids contained in the ERO
-  local expected; expected=$(J "' '.join(d['service']['$1'])"); local got; got=$(ero)
+" "${2:-$SYMBOL}"; }
+want_path() { # key [root port symbol]: the ERO holds the expected router ids in order
+  local expected got; expected=$(J "' '.join(d['${2:-service}']['$1'])"); got=$(ero "${3:-$PARENT}" "${4:-$SYMBOL}")
   echo "     ero: ${got:-<none>}   expected: $expected"; [[ "$got" == *"$expected"* ]]
 }
 
@@ -93,12 +120,20 @@ step "8. restore the link; LSP stays up on the new path"
 sleep 5; want_path expectedPathAfterFaultRouterIds && ok "path stable after restore (no flap)" || echo "  NOTE: path changed after restore (acceptable if the PCE re-optimised); inspect manually"
 
 step "9. remove the service through the controller; removing it again answers removed"
-DEL=$(J "json.dumps({'salasim-service-fleet:input': {'service': [{'service-id': d['service']['serviceId'], 'source': d['service']['sourceRouterId'], 'destination': d['service']['destinationRouterId'], 'tunnel': [{'tunnel-id': d['service']['canonicalTunnelId']}]}]}})")
-RESP=$(restconf delete-services "$DEL"); CODE=${RESP##*$'\n'}; echo "     HTTP $CODE: ${RESP%$'\n'*}" | head -c 500; echo
-if [[ "$CODE" == 2* ]] && echo "${RESP%$'\n'*}" | allAdmitted; then ok "delete admitted"; else bad "delete not admitted"; diag mdsc parent-pce; fi
-gone() { ! get "http://127.0.0.1:$PARENT/api/v1/pce/lsps" | grep -q "$SYMBOL"; }
-until_ 90 "the LSP is gone from the parent PCE" gone
-RESP=$(restconf delete-services "$DEL"); CODE=${RESP##*$'\n'}
-if [[ "$CODE" == 2* ]] && echo "${RESP%$'\n'*}" | grep -q '"removed"'; then ok "a second delete answers removed"; else bad "second delete did not answer removed ($CODE)"; fi
+if remove service; then ok "delete admitted"; else bad "delete not admitted"; diag mdsc parent-pce; fi
+echo "     $LAST" | head -c 500; echo
+gone() { ! get "http://127.0.0.1:$1/api/v1/pce/lsps" | grep -q "$2"; }
+until_ 90 "the LSP is gone from the parent PCE" gone "$PARENT" "$SYMBOL"
+remove service; echo "$LAST" | grep -q '"removed"' && ok "a second delete answers removed" || bad "second delete did not answer removed"
+
+step "10. a service inside one domain: MDSC -> the domain's PNC -> the domain PCE"
+ISYMBOL=$(J "d['intraService']['symbolicPathName']")
+if provision intraService; then ok "intra-domain service admitted"; else bad "intra-domain service not admitted"; diag mdsc pnc-d2 pce-d2; fi
+echo "     $LAST" | head -c 600; echo
+routedTo d2 ref-pnc-d2 && ok "routed through the PNC of its domain (owner d2)" || bad "not routed through ref-pnc-d2"
+until_ 90 "the domain PCE holds the LSP on n3 n4 n5" want_path expectedPathRouterIds intraService "$D2" "$ISYMBOL" || diag pnc-d2 pce-d2
+if remove intraService; then ok "intra-domain delete admitted"; else bad "intra-domain delete not admitted"; diag mdsc pnc-d2 pce-d2; fi
+until_ 90 "the LSP is gone from the domain PCE" gone "$D2" "$ISYMBOL"
+remove intraService; echo "$LAST" | grep -q '"removed"' && ok "a second intra-domain delete answers removed" || bad "second intra-domain delete did not answer removed"
 
 echo; [[ $FAIL -eq 0 ]] && echo "RESULT: PASS" || echo "RESULT: FAIL"; exit $FAIL

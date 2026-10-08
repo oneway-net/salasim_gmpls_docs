@@ -131,5 +131,25 @@
     "medium": 8099,
     "mdscRestconf": 8181
   },
-  "netconfPassword": "reference-scenario"
+  "netconfPassword": "reference-scenario",
+  "intraService": {
+    "serviceId": "svc-2",
+    "canonicalTunnelId": "primary",
+    "source": "n3",
+    "destination": "n5",
+    "bandwidthBps": 5000000,
+    "pathPlanning": {
+      "candidatePathCount": 4
+    },
+    "pathMetrics": [
+      "delay-average",
+      "hop",
+      "delay-variation"
+    ],
+    "expectedPath": [
+      "n3",
+      "n4",
+      "n5"
+    ]
+  }
 }

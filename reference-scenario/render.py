@@ -163,10 +163,12 @@ def domain_native_json(s: dict, domain: str) -> dict:
         "content-data": {"ietf-network:networks": {"network": [network]}}}}
 
 
-def inventory(role: str, domain: str, devices: list[dict]) -> dict:
+def inventory(role: str, domain: str, devices: list[dict], endpoints: list[dict] | None = None) -> dict:
     content = {"deployment-id": "ref", "role": role, "device": devices}
     if domain:
         content["domain-id"] = domain
+    if endpoints:
+        content["endpoint"] = endpoints
     return {"ietf-yang-instance-data:instance-data-set": {
         "name": "salasim-inventory", "content-schema": {"module": "salasim-actn@2026-10-06"},
         "description": f"Inventory of the {role} {domain or ''} of the reference scenario".strip(),
@@ -196,7 +198,9 @@ def inventories(s: dict) -> dict[str, dict]:
     for d in s["domains"]:
         mdsc.append({"device-id": f"ref-pnc-{d['id']}", "kind": "pnc", "domain-id": d["id"],
                      "host": ad[f"pnc-{d['id']}"], "port": ssh})
-    out["mdsc"] = inventory("mdsc", "", mdsc)
+    # the routing table of the manifest: where each router id lives (not devices, never mounted)
+    endpoints = [{"router-id": n["routerId"], "domain-id": n["domain"]} for n in s["nodes"]]
+    out["mdsc"] = inventory("mdsc", "", mdsc, endpoints)
     return out
 
 
@@ -218,6 +222,12 @@ def expected(s: dict) -> dict:
                     "destinationRouterId": nodes[svc["destination"]]["routerId"],
                     "expectedPathRouterIds": [nodes[n]["routerId"] for n in svc["expectedPath"]],
                     "expectedPathAfterFaultRouterIds": [nodes[n]["routerId"] for n in svc["expectedPathAfterFault"]]},
+        "intraService": {**s["intraService"],
+                         "symbolicPathName": f"service/{s['intraService']['serviceId']}/tunnel/{s['intraService']['canonicalTunnelId']}",
+                         "sourceRouterId": nodes[s["intraService"]["source"]]["routerId"],
+                         "destinationRouterId": nodes[s["intraService"]["destination"]]["routerId"],
+                         "domain": nodes[s["intraService"]["source"]]["domain"],
+                         "expectedPathRouterIds": [nodes[n]["routerId"] for n in s["intraService"]["expectedPath"]]},
         "hostPorts": {"parentApi": 18080, "pceD1Api": 18081, "pceD2Api": 18082, "medium": 18099,
                       "mdsc": 18181, "nodeApiBase": 18100},
         "nodes": [n["name"] for n in s["nodes"]],
