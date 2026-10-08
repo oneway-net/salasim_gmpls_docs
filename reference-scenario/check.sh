@@ -102,6 +102,11 @@ want_path() { # key [root port symbol]: the ERO holds the expected router ids in
   echo "     ero: ${got:-<none>}   expected: $expected"; [[ "$got" == *"$expected"* ]]
 }
 
+heard() { # service tunnel state: the MDSC logged that notification (service-state-changed, RFC 5277)
+  "${COMPOSE[@]}" logs mdsc 2>&1 | grep -aq "service state: .* $1/$2 is $3"
+}
+until_ 60 "the MDSC was told by the parent PCE that svc-1 is active" heard svc-1 primary active
+
 step "5. LSP up on the expected path (n1 n2 n3 n4 n5)"
 until_ 60 "ERO equals expectedPathRouterIds" want_path expectedPathRouterIds || diag parent-pce pce-d2
 
@@ -131,6 +136,7 @@ ISYMBOL=$(J "d['intraService']['symbolicPathName']")
 if provision intraService; then ok "intra-domain service admitted"; else bad "intra-domain service not admitted"; diag mdsc pnc-d2 pce-d2; fi
 echo "     $LAST" | head -c 600; echo
 routedTo d2 ref-pnc-d2 && ok "routed through the PNC of its domain (owner d2)" || bad "not routed through ref-pnc-d2"
+until_ 60 "the MDSC was told through the PNC that svc-2 is active" heard svc-2 primary active
 until_ 90 "the domain PCE holds the LSP on n3 n4 n5" want_path expectedPathRouterIds intraService "$D2" "$ISYMBOL" || diag pnc-d2 pce-d2
 if remove intraService; then ok "intra-domain delete admitted"; else bad "intra-domain delete not admitted"; diag mdsc pnc-d2 pce-d2; fi
 until_ 90 "the LSP is gone from the domain PCE" gone "$D2" "$ISYMBOL"
