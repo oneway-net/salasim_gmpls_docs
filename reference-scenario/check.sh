@@ -45,9 +45,18 @@ restconf() { # rpc body  -> prints the HTTP status on the last line
 }
 allAdmitted() { python3 -c "import json,sys;o=json.load(sys.stdin)['salasim-service-fleet:output'];sys.exit(0 if o.get('all-admitted') else 1)"; }
 BODY=$(J "json.dumps({'salasim-service-fleet:input': {'service': [{'service-id': d['service']['serviceId'], 'source': d['service']['sourceRouterId'], 'destination': d['service']['destinationRouterId'], 'bandwidth': str(d['service']['bandwidthBps']), 'path-planning': {'optimization-metric': [{'metric-type': ('salasim-service-types:' if m == 'delay-variation' else 'ietf-te-types:') + 'path-metric-' + m} for m in d['service']['pathMetrics']], 'candidate-path-count': d['service']['pathPlanning']['candidatePathCount']}, 'tunnel': [{'tunnel-id': d['service']['canonicalTunnelId'], 'role': 'primary'}]}]}})")
-RESP=$(restconf provision-services "$BODY")
-CODE=${RESP##*$'\n'}; echo "     HTTP $CODE: ${RESP%$'\n'*}" | head -c 700; echo
-if [[ "$CODE" == 2* ]] && echo "${RESP%$'\n'*}" | allAdmitted; then ok "service admitted by the PCE through the controller"; else bad "service not admitted"; diag mdsc parent-pce pce-d1 pce-d2; fi
+# The parent PCE is mounted by the MDSC a few seconds after it starts. Until then the controller refuses with
+# controller-pce-unavailable and retry-safe=true ("nothing was sent"): a client that sees it simply asks again.
+ADMITTED=0
+for attempt in $(seq 1 30); do
+  RESP=$(restconf provision-services "$BODY")
+  CODE=${RESP##*$'\n'}; JSONBODY=${RESP%$'\n'*}
+  if [[ "$CODE" == 2* ]] && echo "$JSONBODY" | allAdmitted; then ADMITTED=1; break; fi
+  echo "$JSONBODY" | grep -q '"controller-pce-unavailable"' || break
+  echo "     attempt $attempt: the controller has not mounted the PCE yet (retry-safe), asking again"; sleep 3
+done
+echo "     HTTP $CODE: $JSONBODY" | head -c 700; echo
+if [[ $ADMITTED -eq 1 ]]; then ok "service admitted by the PCE through the controller"; else bad "service not admitted"; diag mdsc parent-pce pce-d1 pce-d2; fi
 
 ero() { # prints the router ids of the md-lsp ERO as reported by the parent
   get "http://127.0.0.1:$PARENT/api/v1/pce/lsps" | python3 -c "
