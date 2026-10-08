@@ -355,6 +355,8 @@ salasim_sim/            仿真模块
 
 > **PCE 与 controller 的职责边界(2026-10-08,用户采纳"根据你的建议,做迁移";代码尚未开始迁移)**:PCE 承担的管控功能偏多——`parentPCE` 包 2.3 万行(保护组、业务开通、重路由重试与退避、事实遥测、业务级准入),`PceApiServer` 37 个 HTTP 端点,业务开通入口直接在父 PCE 上,controller 在主路径上只管拓扑。边界定为:**PCE 回答"有没有路、怎么走、把这条 LSP 建起来",controller 决定"应该有哪些业务、失败了怎么办"**。保留在 PCE:算路、TED、LSP-DB、有状态 PCEP、H-PCE 协作、对一次故障的路径重算;上移到 MDSC:业务意图与开通入口(RESTCONF,模型 `salasim-service`)、重试策略、保护与分集策略、业务级准入;事实遥测改独立出口。PCE 仍是独立进程(不是 controller 的一部分,也不是 sidecar),与 PNC 一对一配对部署。迁移沿用 `service-provisioning-inventory.md`(C2b)的盘点与 D1–D14,但去掉 run 语义(`simulator-run-id`、过期 run 围栏、按 run 清空注册表),入口改为 controller 的 RESTCONF,Backend 适配并入 P6;分 M0–M8 九步,每步单独在参考场景上验证,详见 `pce-controller-boundary.md`。迁移前提:参考场景第 7 步(故障恢复)先跑通——现状是第 1–6 步通过,父 PCE 已启动重路由,`BREAK_THEN_MAKE` 以 `unconfirmed` 失败。
 
+> **参考场景首次端到端通过(2026-10-08,测试机 10.112.61.137)**:`docs/reference-scenario/check.sh` 八步全部通过——跨域 LSP 建在 n1-n2-n3-n4-n5,n3–n4 故障经信令通知到 PCE,父 PCE 重路由到 n1-n2-n3-n5,恢复链路后不抖动。从全部失败到通过修了 11 处缝(场景渲染 3、检查脚本 1、controller 2、emulator 3、PCE 1、一次误提交的修复),其中 5 处是事件顺序与状态生命周期问题,详见 `pce-controller-boundary.md` §6。原先标注"未验证"的 compose 接线、启动时序、日志匹配与 API 形状,现已在这一台机器上验证过一次;重复运行与压力仍未验证。
+
 与 `architecture-evolution-design.md` 的关系:W1(Java 25)、W2(锁与并发,与 P1/P2 合并)、W4(JetStream/Postgres,与 P3 合并)继续有效;W3、W5、W6 中与本文冲突的部分已在该文头部标注取代。
 
 ## 6. 待决项与风险
