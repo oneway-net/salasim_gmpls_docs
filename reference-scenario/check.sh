@@ -50,12 +50,19 @@ mkbody() {
 import json, sys
 d = json.load(open(sys.argv[1]))[sys.argv[2]]
 svc = {'service-id': d['serviceId'], 'source': d['sourceRouterId'], 'destination': d['destinationRouterId']}
-if sys.argv[3] == 'create':
+if sys.argv[3] in ('create', 'create-protected'):
     svc['bandwidth'] = str(d['bandwidthBps'])
     svc['path-planning'] = {'optimization-metric': [{'metric-type': ('salasim-service-types:' if m == 'delay-variation'
         else 'ietf-te-types:') + 'path-metric-' + m} for m in d['pathMetrics']],
         'candidate-path-count': d['pathPlanning']['candidatePathCount']}
-    svc['tunnel'] = [{'tunnel-id': d['canonicalTunnelId'], 'role': 'primary'}]
+    if sys.argv[3] == 'create-protected':
+        p = d['protection']  # no tunnels: the controller chooses them
+        svc['protection'] = {'mode': p['mode'], 'diversity': p['diversity'], 'revertive': p['revertive'],
+                             'hold-off-time': p['holdOffMillis'], 'wait-to-revert': p['waitToRevertSeconds']}
+    else:
+        svc['tunnel'] = [{'tunnel-id': d['canonicalTunnelId'], 'role': 'primary'}]
+elif sys.argv[2] == 'protectedService':
+    pass  # deleting a protected service names no tunnels
 else:
     svc['tunnel'] = [{'tunnel-id': d['canonicalTunnelId']}]
 print(json.dumps({'salasim-service-fleet:input': {'service': [svc]}}))
@@ -63,9 +70,9 @@ PY
 }
 # A target is mounted by the controller a few seconds after it starts. Until then the controller refuses with
 # controller-pce-unavailable / controller-pnc-unavailable and retry-safe=true ("nothing was sent"): a client asks again.
-provision() { # key -> LAST holds the answer; succeeds when the service was admitted
+provision() { # key [mode] -> LAST holds the answer; succeeds when the service was admitted
   local body attempt resp code
-  body=$(mkbody "$1" create); LAST=""
+  body=$(mkbody "$1" "${2:-create}"); LAST=""
   for attempt in $(seq 1 30); do
     resp=$(restconf provision-services "$body"); code=${resp##*$'\n'}; LAST=${resp%$'\n'*}
     if [[ "$code" == 2* ]] && echo "$LAST" | allAdmitted; then return 0; fi
@@ -142,4 +149,45 @@ if remove intraService; then ok "intra-domain delete admitted"; else bad "intra-
 until_ 90 "the LSP is gone from the domain PCE" gone "$D2" "$ISYMBOL"
 remove intraService; echo "$LAST" | grep -q '"removed"' && ok "a second intra-domain delete answers removed" || bad "second intra-domain delete did not answer removed"
 
-echo; [[ $FAIL -eq 0 ]] && echo "RESULT: PASS" || echo "RESULT: FAIL"; exit $FAIL
+
+step "11. a protected service inside one domain: the controller chooses primary and standby"
+PSYM=$(J "d['protectedService']['primarySymbolicPathName']"); SSYM=$(J "d['protectedService']['standbySymbolicPathName']")
+mdsc_log_count() { "${COMPOSE[@]}" logs mdsc 2>&1 | grep -ac "$1"; }
+carried() { # leg [minimum count]: the controller logged that the service moved to this leg
+  [[ $(mdsc_log_count "protection: svc-3 is carried by the $1") -ge ${2:-1} ]]
+}
+if provision protectedService create-protected; then ok "protected service admitted (no tunnels in the request)"; else bad "protected service not admitted"; diag mdsc pnc-d2 pce-d2; fi
+echo "     $LAST" | head -c 500; echo
+routedTo d2 ref-pnc-d2 && ok "routed through the PNC of its domain" || bad "not routed through ref-pnc-d2"
+until_ 90 "the primary is on n3 n4 n5" want_path expectedPrimaryPathRouterIds protectedService "$D2" "$PSYM" || diag mdsc pce-d2
+until_ 90 "the MDSC was told that the standby is active (it is asked for only after the primary is)" heard svc-3 standby active
+until_ 30 "the standby is on n3 n5, diverse from the primary" want_path expectedStandbyPathRouterIds protectedService "$D2" "$SSYM" || diag mdsc pce-d2
+"${COMPOSE[@]}" exec -T mdsc sh -c 'cat /var/salasim/shared/protection/svc-3.properties' | grep -E '^(phase|selected)=' | sed 's/^/     stored: /'
+
+step "12. the primary link fails: the controller moves the service to the standby"
+"$HERE/fault.sh" down && ok "carrier down on the primary's link" || bad "fault injection failed"
+until_ 60 "the MDSC was told that the primary of svc-3 is down" heard svc-3 primary down
+until_ 30 "the service is carried by the standby" carried standby || diag mdsc pce-d2
+
+step "13. the link comes back: after wait-to-revert the service returns to the primary"
+"$HERE/restore.sh" >/dev/null && ok "carrier up written" || bad "restore failed"
+until_ 120 "the service is carried by the primary again (wait-to-revert 10 s, revertive)" carried primary || diag mdsc pce-d2
+
+replays() { restconf provision-services "$(mkbody protectedService create-protected)" | grep -q 'idempotent-replay'; }
+
+step "14. the controller restarts: it continues from what it stored"
+"${COMPOSE[@]}" restart mdsc >/dev/null 2>&1 && ok "mdsc restarted" || bad "mdsc restart failed"
+until_ 90 "the restarted controller loaded the protected service" bash -c "${COMPOSE[*]} logs mdsc 2>&1 | grep -a 'protected service(s) loaded' | tail -1 | grep -qv ' 0 protected'"
+until_ 60 "the MDSC is mounted to its PCEs again (a repeated provision answers as a replay)" replays
+"$HERE/fault.sh" down >/dev/null && ok "carrier down again" || bad "fault injection failed"
+until_ 60 "the restarted controller moves the service to the standby again" carried standby 2 || diag mdsc pce-d2
+"$HERE/restore.sh" >/dev/null
+
+step "15. remove the protected service: no tunnels listed, both legs go"
+if remove protectedService; then ok "delete admitted"; else bad "delete not admitted"; diag mdsc pce-d2; fi
+until_ 90 "the primary is gone from the domain PCE" gone "$D2" "$PSYM"
+until_ 90 "the standby is gone from the domain PCE" gone "$D2" "$SSYM"
+until_ 60 "the controller forgot the service (state file removed)" bash -c "! ${COMPOSE[*]} exec -T mdsc test -e /var/salasim/shared/protection/svc-3.properties"
+
+echo
+if [[ $FAIL -eq 0 ]]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; exit 1; fi

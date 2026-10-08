@@ -151,5 +151,35 @@
       "n4",
       "n5"
     ]
+  },
+  "protectedService": {
+    "serviceId": "svc-3",
+    "source": "n3",
+    "destination": "n5",
+    "bandwidthBps": 5000000,
+    "pathPlanning": {
+      "candidatePathCount": 4
+    },
+    "pathMetrics": [
+      "delay-average",
+      "hop",
+      "delay-variation"
+    ],
+    "protection": {
+      "mode": "dedicated",
+      "diversity": "link",
+      "revertive": true,
+      "holdOffMillis": 0,
+      "waitToRevertSeconds": 10
+    },
+    "expectedPrimaryPath": [
+      "n3",
+      "n4",
+      "n5"
+    ],
+    "expectedStandbyPath": [
+      "n3",
+      "n5"
+    ]
   }
 }

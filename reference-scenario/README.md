@@ -23,7 +23,7 @@ n3–n4, n1 n2 n3 n5.
 | `render.py` | writes `build/`: per-domain topology (JSON, XML, RFC 9195 native), PNC/MDSC inventories, PCE and emulator configs, `docker-compose.yml`, `expected.json` |
 | `medium_server.py` | link-plane medium (one `salasim_sim.linkplane` app per node) |
 | `run.sh` | build images, render, start in order, wait for the composed topology, stop with `down` |
-| `check.sh` | acceptance steps 1–10 (provisioning and removal go through the controller; step 10 is a service inside one domain, MDSC → PNC → domain PCE) |
+| `check.sh` | acceptance steps 1–15 (provisioning and removal go through the controller; step 10 is a service inside one domain, MDSC → PNC → domain PCE; steps 11–15 are a 1:1 protected service `svc-3` n3 → n5: the controller chooses primary n3 n4 n5 and standby n3 n5, moves the service to the standby when the n3–n4 link fails (hold-off 0), back after wait-to-revert 10 s, continues after an MDSC restart, and removes both legs without being given tunnel ids) |
 | `fault.sh` / `restore.sh` | carrier down/up on both ends of n3–n4 through the medium |
 
 ## Run
@@ -53,3 +53,4 @@ On failure it prints the tail of the relevant container logs.
   `ero()` in `check.sh` if the payload nests differently.
 - Log greps in step 7 are loose on purpose; tighten once real output is seen.
 - Images build from the workspace root (`docker build -f <repo>/Dockerfile .`); clear stale `target/` dirs first.
+- Steps 11–15 are UNVERIFIED (written 2026-10-09, never run). Known race: after the fault the PCE also reroutes the primary, onto the direct link the standby uses, so the primary comes back `active` on a path that shares the standby's link; the controller keeps the service on the standby until the revert timer fires (step 13 then moves it back to the primary regardless). This is what the policy does; whether it is what a protected service should do is open.
