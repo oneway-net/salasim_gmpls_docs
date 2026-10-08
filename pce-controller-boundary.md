@@ -105,6 +105,35 @@ D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张�
 
 **这次迁移暴露的两个契约问题**(都已修复并有测试):`attempt/operation-id` 原本必填,逼调用者编关联 id;PCE 把按域的 LSP id 的键(`/0.0.0.1`)原样放进 dotted-quad 的 `domain` 叶子,PCE 服务端不校验自己的输出,直到 controller 客户端第一次真实解析才暴露。
 
+## 5b. M5 + M6 的实施计划(用户 2026-10-09 确认:一起做;通知读回;状态持久化;第一版 1:1 专用 + 链路分集 + 降级)
+
+**用户的四个选择**(都不是我最初的推荐,按用户的来):
+
+| 问题 | 选择 | 代价 |
+|---|---|---|
+| M5 与 M6 先后 | **一起做**,一次性删掉 PCE 的保护注册表 | 改动面最大;`ProtectionGroupRegistry` 被 `ParentMdLspReroute` 引用 17 处,还连着重路由调度器、事实发射、域侧分集判断 |
+| 状态读回 | **NETCONF 通知 `service-state-changed`**(RFC 5277,`SALASIM` 流) | 通知不持久,所以仍需要一个读回 RPC `query-services` 做重启后的对账;controller 能否订阅已挂载 PCE 的通知(C1-0)尚未验证 |
+| controller 的保护状态 | **持久化到文件** | 新增存储;重启后能续上选择与 WTR 计时 |
+| 第一版范围 | **1:1 专用保护 + 链路分集 + 降级** | 节点/SRLG 分集与 1:N 共享保护放到后面 |
+
+**分工(第一版)**:
+
+- **PCE 保留**:对一条隧道算路时的**分集约束**("与某条参考隧道在链路上不相交")。这是标准里 XRO(RFC 5521)的语义,PCE 已经支持(请求体的 `diversityAgainstSymbolicPathName` 与 `diversity`,参考路径从 LSP-DB 取,**不依赖保护注册表**)。找不到不相交路径时,PCE 按"共享链路回退"重算并在结果里报 `protection-degraded`——这是算路本身的行为,不是策略。
+- **controller 接管**:把保护业务**展开**成主、备隧道;**顺序**(先主,主 ACTIVE 后再建备,备与主分集);**降级策略**(看到备 `protection-degraded` 后保留还是拆掉、业务怎么标);**选择**(当前由哪条隧道承载、主故障切备、回切、保持时间与 WTR);以上状态**持久化**。
+- **删除(PCE)**:`ProtectionGroupRegistry`、`ProtectionDiversity` 里只为保护组服务的部分、`/protection-groups` HTTP 路由、`TunnelUpdateEmitter` 里的选择事件、重路由里的"保护组健康"耦合(`recoveryHealthListener`、`repairInFlightProbe`)。
+
+**阶段**(每阶段单独提交、在参考场景上验证,不并行):
+
+| 阶段 | 内容 | 验证 |
+|---|---|---|
+| **A** | **通知通路**:PCE 在每次隧道状态变化时发 `service-state-changed`;controller 订阅(监听 + `create-subscription`),PNC 把域 PCE 的通知转发到自己的 MPI | 先做 spike:参考场景里开通一个业务,controller 日志里看到 ACTIVE 通知 |
+| **B** | **PCE 侧**:服务模型加 `tunnel/diverse-from` + `diversity`;一个业务的多条隧道可分次受理(注册表改为服务级条目 + 隧道级状态);`query-services` RPC;单隧道的备用角色 | 单测 + 进程内 NETCONF 测试 |
+| **C** | **controller 侧**:`provision-services` 接受带 `protection` 的业务并展开(隧道 id 由 controller 取:`primary`、`standby`);保护管理器(顺序、降级、选择、回切);文件存储;`query-services`(controller 级) | 单测 + 参考场景新增一个 d2 内的保护业务(n3→n5:主 n3-n4-n5,备直连 n3-n5,链路分集) |
+| **D** | 参考场景:主链路故障 → 选择切到备;恢复 → WTR 后回切;重启 controller → 状态续上 | 参考场景新增步骤 |
+| **E(= M6 的删除部分)** | 删 PCE 的保护注册表与相关路由;拆 `ParentMdLspReroute`(算新路径留下,重试策略迁出) | 全部现有 PCE 测试 + 参考场景 |
+
+**风险**:`ParentMdLspReroute`(4605 行)里同时有"算新路径并下发 PCUpd"和"何时重试",E 阶段必须先拆开并各自带测试再删;历次审计修出来的并发和顺序细节集中在这里。
+
 ## 5a. PCE 里还剩什么要迁(2026-10-09 盘点,按代码)
 
 保留在 PCE(标准):PCEP(RFC 5440 / 8231 / 8281 / 6805)、TED、LSP-DB、算路算法与目标函数、对已委托 LSP 的路径重算与 PCUpd、TED 上的带宽记账(`ParentMplsBandwidthUpdater`)、只读运行态。
