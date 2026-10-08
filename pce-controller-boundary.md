@@ -87,6 +87,24 @@ D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张�
 
 **这次迁移暴露的两个契约问题**(都已修复并有测试):`attempt/operation-id` 原本必填,逼调用者编关联 id;PCE 把按域的 LSP id 的键(`/0.0.0.1`)原样放进 dotted-quad 的 `domain` 叶子,PCE 服务端不校验自己的输出,直到 controller 客户端第一次真实解析才暴露。
 
+## 5a. PCE 里还剩什么要迁(2026-10-09 盘点,按代码)
+
+保留在 PCE(标准):PCEP(RFC 5440 / 8231 / 8281 / 6805)、TED、LSP-DB、算路算法与目标函数、对已委托 LSP 的路径重算与 PCUpd、TED 上的带宽记账(`ParentMplsBandwidthUpdater`)、只读运行态。
+
+| 要迁的内容 | 位置与规模(行) | 步骤 |
+|---|---|---|
+| 重路由的编排、重试、退避、放弃 | `ParentMdLspReroute` 4605、`LspRerouteBackoff` 852、`PendingUpdateTracker` 1209、`SnapshotLspRerouteHelper` 454、`RerouteBudget` 138、`DomainPCEServer`(2166)里的反应式队列与退避 | M6 |
+| 业务开通(父侧) | `ParentMdLspInitiateService` 2275 | M1–M3 已建入口;旧路由待 M8 |
+| 业务开通(域内)、成对分集 | `IntraDomainLspInitiateHandler` 721、`SrlgDisjointPairComputeHandler` 212 | M4 / M5 |
+| 保护组与分集策略 | `ProtectionGroupRegistry` 1046、`ProtectionDiversity` 223 | M5 |
+| 事实与遥测 | `TunnelUpdateEmitter` 1083、`LspFactSink`、`SignalingOperationTelemetry`、`PathTelemetryResolver`、`RerouteApplyEvidence`、`RouteSelectionEvidence`、`TunnelTelemetryRegistry` | M7 |
+| 业务级准入与限流 | `ParentMplsAdmissionCoordinator` 568、`ParentPcUpdAdmissionController` 107 | 随 M3 / M6;PCE 只保留对自己算路队列的保护 |
+| **端到端 LSP 复用池**(原计划漏列) | `EndToEndLspReuseRegistry` 727 | **M9** |
+| **计划与预测**(原计划漏列) | `net.salasim.pce.plan`:`ContactPlan`、`PlanReconciler`、`RoutePlanning*`,约 350 | **M10**:计划由 controller 持有,PCE 只接收约束 |
+| HTTP 北向 API | `PceApiServer` 25 个路径 | M8:删业务类六条与演示调试四条;保留只读运行态;`/events/stream` 并入 M7;PCE 北向最终只剩 NETCONF/YANG |
+
+**M6 的前置拆分**:`ParentMdLspReroute` 同时含"算新路径并下发 PCUpd"(留在 PCE)和"何时重试、退避、放弃"(迁出),在一个 4600 行的类里。必须先把两者拆开并各自带测试,再迁策略,否则会把算路一起带走。历次审计修出来的并发和顺序细节集中在这几个类里,只能一块块带着测试搬。
+
 ## 6. 与参考场景的关系
 
 参考场景是每一步的安全网。迁移的前置条件(第 7 步故障恢复先跑通)**已满足**:2026-10-08 在测试机(10.112.61.137,Ubuntu 22.04,Docker 29)上第一次端到端 `check.sh` 全部通过——开通跨域 LSP 到 n1 n2 n3 n4 n5,注入 n3–n4 故障,经信令通知到 PCE,父 PCE 重路由到 n1 n2 n3 n5,恢复链路后路径不抖动。
