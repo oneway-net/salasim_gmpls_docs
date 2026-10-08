@@ -62,19 +62,30 @@ D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张�
 
 ## 5. 迁移步骤
 
-每一步单独提交、单独在参考场景上验证,不并行。
+每一步单独提交、单独在参考场景上验证,不并行。状态截至 2026-10-09。
 
-| 步骤 | 内容 | 验证 |
+| 步骤 | 内容 | 状态 |
 |---|---|---|
-| **M0** | 本文 + `salasim-service*` YANG 中性化(去 run、attempt、Backend 措辞) | `validate.sh`;生成的绑定能编译 |
-| **M1** | PCE:中性 `ServiceIntent` 与 `ServiceRegistry`(受理、重放、冲突、墓碑);现有 `md-lsps` 请求体经适配器收敛到它 | 对现有请求体,适配器产出相等的意图;原 HTTP 行为不变 |
-| **M2** | 父 PCE 的 NETCONF RPC `create-services` / `delete-services`(只做**跨域、不保护、单隧道**),受理语义 | 进程内 NETCONF 测试;重放与冲突用例 |
-| **M3** | MDSC:RESTCONF 的 `create-services` / `delete-services` / `query-services`,按清单路由到父 PCE;**参考场景的开通改走它** | 参考场景 `check.sh` 第 4 步经 RESTCONF 通过 |
-| **M4** | 域内业务:MDSC → PNC → 域 PCE | 参考场景增加一条域内业务 |
-| **M5** | 保护与分集策略上移(先决定 D1/D2 的修订) | 保护场景 |
-| **M6** | 恢复策略上移:PCE 删去 `LspRerouteBackoff` 与父侧重试,只发"需要恢复 / 无路"事件;controller 持有重试 | 参考场景第 7 步 |
-| **M7** | 事实与遥测独立出口 | 事实集合对照 |
-| **M8** | 验收后删除 PCE 上的 `/md-lsps`、`/lsp/initiate`、`/protection-groups` 等 HTTP 路由与 Backend 的直接调用(后者随 P6) | grep 守卫 |
+| **M0** | 本文 + `salasim-service*` YANG 中性化(去 run、Backend 措辞;`operation-id` 改为可选;三个模块归为 core) | **完成**,yang `74a1505`、`b112229` |
+| **M1** | PCE:中性 `ServiceIntent`、`ServiceRegistry`(受理、重放、冲突、墓碑)、`ServiceProvisioner` | **完成**(跨域、单条不保护隧道),13 个单测,pce `1c6a20c` |
+| **M2** | 父 PCE 的 NETCONF RPC `create-services` / `delete-services`,受理语义 | **完成**,6 个进程内 NETCONF 测试,pce `028d089` |
+| **M3** | MDSC:RESTCONF 的 `provision-services` / `delete-services`,转发给父 PCE;**参考场景的开通与删除改走它** | **完成**(不含 `query-services` 与 `wait=outcome`),7+2 个单测,controller `0cacff9`;参考场景 27 项全过 |
+| M3b | `query-services`、`wait=outcome`:需要 PCE 提供运行态 `services` 容器 | 未开始 |
+| **M4** | 域内业务:MDSC → PNC → 域 PCE;端点到域的路由表(清单需带 router-id 与 domain) | 未开始 |
+| **M5** | 保护与分集策略上移(先决定 D1/D2 的修订) | 未开始,**需要你决定 D1/D2** |
+| **M6** | 恢复策略上移:PCE 删去 `LspRerouteBackoff` 与父侧重试,只发"需要恢复 / 无路"事件;controller 持有重试 | 未开始 |
+| **M7** | 事实与遥测独立出口 | 未开始 |
+| **M8** | 验收后删除 PCE 上的 `/md-lsps`、`/lsp/initiate`、`/protection-groups` 等 HTTP 路由与 Backend 的直接调用(后者随 P6) | 未开始 |
+
+**M1–M3 的范围和限制(已实现的部分)**:
+
+- 只支持**一条不保护的隧道**;受保护的服务以 `service-protection-unsupported`(retry-safe)被拒绝,不会半成功。
+- 所有服务都路由到**父 PCE**(MDSC 目前只管理这一个 PCE)。同域端点走域 PCE 需要 M4。
+- 受理即返回,不等信令结束。状态在 PCE 的注册表里;没有 `query-services` 之前,验证要靠 PCE 的现有 HTTP 读接口。
+- 父 PCE 尚未挂载时,controller 返回 `controller-pce-unavailable`、`retry-safe=true`、"什么都没发送";客户端重试即可(参考场景第 4 步就是这样做的)。PCE 在请求发出后不再应答,返回 `controller-outcome-uncertain`;PCE 以"请求无效"拒绝,则当作调用者的错误抛回。
+- PCE 里的旧 HTTP 路由(`/md-lsps` 等)**还在**,等 M8 验收后再删。
+
+**这次迁移暴露的两个契约问题**(都已修复并有测试):`attempt/operation-id` 原本必填,逼调用者编关联 id;PCE 把按域的 LSP id 的键(`/0.0.0.1`)原样放进 dotted-quad 的 `domain` 叶子,PCE 服务端不校验自己的输出,直到 controller 客户端第一次真实解析才暴露。
 
 ## 6. 与参考场景的关系
 
