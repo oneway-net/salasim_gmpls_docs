@@ -2,7 +2,6 @@
   "comment": "Ratchet baselines for docs/tools/fitness/fitness.py; counts may only go down.",
   "counts": {
     "F1/salasim_gmpls_emulator": 1,
-    "F4/salasim_gmpls_protocols": 1,
     "F7/salasim_gmpls_controller": 1,
     "F7/salasim_gmpls_emulator": 13,
     "F7/salasim_gmpls_netconf": 4,
