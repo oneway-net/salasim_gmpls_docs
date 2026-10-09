@@ -150,7 +150,21 @@ until_ 90 "the LSP is gone from the domain PCE" gone "$D2" "$ISYMBOL"
 remove intraService; echo "$LAST" | grep -q '"removed"' && ok "a second intra-domain delete answers removed" || bad "second intra-domain delete did not answer removed"
 
 
+# the MDSC's northbound facts (salasim-fact network-fact), as a client receives them: RFC 8040 notification stream, SSE
+FACTS=/tmp/salasim-ref-facts.sse
+stream_open() { # file seconds: subscribe to network-fact on the MDSC and record the stream into file in the background
+  local s; s=$(restconf create-notification-stream '{"input":{"notifications":["(urn:salasim:fact?revision=2026-10-08)network-fact"]}}' \
+    | head -n -1 | python3 -c "import json,sys;print(json.load(sys.stdin)['sal-remote:output']['notification-stream-identifier'])") || return 1
+  rm -f "$1"; (timeout "$2" curl -s -N -H 'Accept: text/event-stream' "http://127.0.0.1:$MDSC/restconf/streams/json/$s" > "$1" 2>&1 &)
+}
+stream_has() { grep -q "$2" "$1"; } # file pattern
+
 step "11. a protected service inside one domain: the controller chooses primary and standby"
+RESTCONF_OPS="http://127.0.0.1:$MDSC/restconf/operations"
+restconf_saved=$RESTCONF; RESTCONF="$RESTCONF_OPS/sal-remote"
+stream_open "$FACTS" 600 && ok "subscribed to the MDSC's network-fact stream" || bad "could not subscribe to the MDSC's network-fact stream"
+RESTCONF=$restconf_saved
+sleep 1
 PSYM=$(J "d['protectedService']['primarySymbolicPathName']"); SSYM=$(J "d['protectedService']['standbySymbolicPathName']")
 mdsc_log_count() { "${COMPOSE[@]}" logs mdsc 2>&1 | grep -ac "$1"; }
 queried() { # service-id leaf value: the controller's query-services answer has this leaf value for the service
@@ -174,6 +188,8 @@ step "12. the primary link fails: the controller moves the service to the standb
 "$HERE/fault.sh" down && ok "carrier down on the primary's link" || bad "fault injection failed"
 until_ 60 "the MDSC was told that the primary of svc-3 is down" heard svc-3 primary down
 until_ 30 "the service is carried by the standby" carried standby || diag mdsc pce-d2
+until_ 30 "the MDSC's stream carried the standby's LSP facts (domain PCE -> PNC -> MDSC -> client)" stream_has "$FACTS" '"symbolic-path-name":"service/svc-3/tunnel/standby"'
+until_ 30 "the MDSC's stream carried the controller's protection-selection fact for svc-3" stream_has "$FACTS" '"protection-selection":{[^}]*"service-id":"svc-3"'
 until_ 30 "query-services: svc-3 is carried by the standby and still up" bash -c "$(declare -f restconf queried); EXP='$EXP'; RESTCONF='$RESTCONF'; queried svc-3 selected-tunnel standby && queried svc-3 oper-status up"
 
 replays() { restconf provision-services "$(mkbody protectedService create-protected)" | grep -q 'idempotent-replay'; }
