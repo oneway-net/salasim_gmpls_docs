@@ -8,7 +8,7 @@
 |---|---|---|
 | 1 | C(父 PCE 并入 MDSC)怎么做 | **只做 B,C 以后再说**。父 PCE 仍是独立进程。 |
 | 2 | MDSC 怎么把各段交给 PNC | **给端点和约束,域内自己算**。MDSC 选好边界节点和域间链路,PNC/域 PCE 在域内按带宽、度量算这一段。MDSC 只看抽象拓扑。 |
-| 3 | 恢复与预测(跨快照预计算) | **预计算一起迁**,不留成"暂时缺失"。 |
+| 3 | 恢复与预测(跨快照预计算) | **响应式恢复上移到 MDSC;预计算(算和计划对账)留在父 PCE,执行归 MDSC。** 2026-10-09 先选了"预计算一起迁",随后改为"预计算留在父 PCE";后者与决定 2 一致的前提是父 PCE **只出计划、不下发**(见 §3)。 |
 | 4 | 替换方式 | **原地替换,靠 git 提交回退**;参考场景是验收。不写新旧并存的开关。 |
 
 ## 2. 为什么这样改(标准对照)
@@ -37,15 +37,20 @@
    (只回答段代价)  PCEP PCInitiate/PCUpd 到 PCC
 ```
 
-## 3. 一个必须说清楚的矛盾(待用户确认我的解读)
+## 3. 预计算留在父 PCE:怎么和决定 2 相容(已解决,接口细节留给 S5)
 
-决定 1 说 C 不做,决定 3 说预计算要迁。二者放在一起只有一种自洽的读法:
+"预计算留在父 PCE"若还包括"由父 PCE 在帧边界直接 PCUpd 到子 PCE",域 PCE 就有了第二个上级,和决定 2 冲突。**相容的读法是把预计算拆成两半:**
 
-> **跨域 LSP 的生命周期(建立、状态、域间链路带宽记账、响应式恢复、预计算的下发)整体移到 MDSC;父 PCE 留作独立进程,退化为无状态的算路服务。**
+| 部分 | 归属 |
+|---|---|
+| 预计算:对未来每个快照算出路径、缓存、与实际拓扑对账(`pce.plan` 的父侧) | **父 PCE**(这也正是 `pce-controller-boundary.md` 最初划的边界:PCE 留预测与对账,只有接触计划的存储/分发归 controller) |
+| 执行:到点把受影响跨域业务的段换成计划里的新路径(先建后拆) | **MDSC**,经 PNC 下发 |
 
-也就是说 C 里"进程并入"推迟了,但 C 里"逻辑上提"随 B 一起做了。这仍然是约 2 万行父 PCE 角色里**有状态那一半**的重写:`ParentMdLspInitiateService`(2267)、`ParentMdLspReroute`(4409)、`InterDomainLspInitiateHelper`(1022)、`ParentMplsBandwidthUpdater`(786)、`ParentMplsAdmissionCoordinator`(568)、`RecoveryIntentScheduler`、`LspRerouteBackoff`,以及预计算与计划对账(`pce.plan` 的父侧)。留在父 PCE 的是算法(`MDHPCE*`、`ParentMplsAlgorithmFactory`、`ChildPCERequestManager`)。
+于是跨域 LSP 的**生命周期**(建立、状态、域间链路带宽记账、响应式恢复、计划的执行)在 MDSC;父 PCE 不持有 LSP 状态,只持有拓扑、算法和预计算缓存。父 PCE 仍是独立进程(C 推迟)。
 
-如果用户的本意是"预计算仍在父 PCE 里、由它在帧边界直接 PCUpd 到子 PCE",那和决定 2 冲突(域 PCE 又有了第二个上级),需要改决定 3。
+涉及的新接口(S5 设计,这里只记问题):
+- MDSC 怎么拿到计划:`compute-paths` 带"时间范围"返回按快照窗口排列的路径序列,**由 MDSC 决定何时执行**;还是父 PCE 在帧边界发 `path-change-recommended` 通知,MDSC 收到即执行。前者把时钟推进放到 MDSC,后者保持"PCE 按自己的时钟对账"。倾向后者,但需要 MDSC 把"在跟踪的跨域业务"登记给父 PCE(它不再有自己的 LSP-DB)。
+- 对账需要"当前实际路径":由 MDSC 随登记提供,或父 PCE 订阅 PNC 的段状态。
 
 ## 4. 接口
 
@@ -85,8 +90,8 @@
 | **S2** | MDSC `CrossDomainOrchestrator`:建立与删除。计算 → 逐段申请 → 状态汇总;失败回滚。`ServiceProvisioningRpcs` 对跨域业务改走它,不再调父 PCE 的 `create-services`。 | 场景第 4、5、9 步经新路径通过 |
 | **S3** | 域间链路带宽记账移到 MDSC(取代 `ParentMplsBandwidthUpdater` / `ParentMplsAdmissionCoordinator` 的跨域部分)。 | 带宽不足时拒绝、释放后可再申请的测试;场景新增一步 |
 | **S4** | 响应式恢复:段 down 通知 → MDSC 重算 → 重建受影响段。保护的跨域在此阶段设计。 | 场景第 6、7、8 步经新路径通过,无抖动 |
-| **S5** | 预计算与计划对账的跨域部分迁到 MDSC(决定 3)。 | 需要新增场景:帧切换前后路径按计划切换 |
-| **S6** | 删除父 PCE 的有状态部分:`ParentMdLspInitiateService`、`ParentMdLspReroute`、`InterDomainLspInitiateHelper`、向子 PCE 的 PCInitiate/PCUpd 路径、父侧 LSP-DB、对应测试。父 PCE 只剩算路。 | 全部 PCE 测试 + 场景全过 |
+| **S5** | 预计算留在父 PCE,新增"计划 → MDSC 执行"接口(§3),父 PCE 不再直接下发。 | 需要新增场景:帧切换前后路径按计划切换,且只经 PNC 下发 |
+| **S6** | 删除父 PCE 的有状态部分:`ParentMdLspInitiateService`、`ParentMdLspReroute` 的恢复与下发、`InterDomainLspInitiateHelper`、向子 PCE 的 PCInitiate/PCUpd 路径、父侧 LSP-DB、对应测试。父 PCE 只剩算路、预计算与对账。 | 全部 PCE 测试 + 场景全过 |
 
 ## 6. 风险与未知
 
@@ -94,7 +99,7 @@
 2. **跨段的原子性。** 一个段建立失败要回滚已建的段;回滚本身可能失败(PNC 不可达)。需要和 `ProtectionManager` 一样,把"待清理"持久化,重启后继续。
 3. **响应式恢复多了一跳。** 故障 → 域 PCE → PNC → MDSC → 重算 → PNC → 域 PCE。恢复时延会变长,场景里要量出来并记入文档,不要事后才发现。
 4. **`ParentMdLspReroute` 里的并发与顺序细节(run generation、UP/DOWN 顺序、owner 校验、重试预算)是多轮审计修出来的。** 重写不能凭印象,S4 开始前先逐条列出它们并各自带测试。
-5. **S5 的范围最大**,预计算与计划对账牵涉快照时间、帧切换和接触计划存储(M10),可能要把 M10 一并拉进来。
+5. **S5 的接口最难定**:父 PCE 不再有 LSP-DB,却要对账"实际路径";"在跟踪的业务"登记、通知的时序、时钟归属(§3)都要设计,并与接触计划存储(M10)交界。
 6. **Backend 仍在调已删除的 `/protection-groups`**,P6 之前运行流程本来就是断的;本计划不改变这一点。
 
 ## 7. 不在本计划内
