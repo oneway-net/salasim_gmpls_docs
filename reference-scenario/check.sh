@@ -153,6 +153,10 @@ remove intraService; echo "$LAST" | grep -q '"removed"' && ok "a second intra-do
 step "11. a protected service inside one domain: the controller chooses primary and standby"
 PSYM=$(J "d['protectedService']['primarySymbolicPathName']"); SSYM=$(J "d['protectedService']['standbySymbolicPathName']")
 mdsc_log_count() { "${COMPOSE[@]}" logs mdsc 2>&1 | grep -ac "$1"; }
+queried() { # service-id leaf value: the controller's query-services answer has this leaf value for the service
+  restconf query-services "{\"salasim-service-fleet:input\":{\"service\":[{\"service-id\":\"$1\"}]}}" \
+    | python3 -c "import json,sys;b=sys.stdin.read().rsplit('\n',1)[0];s=json.loads(b)['salasim-service-fleet:output']['service'][0];print(s.get('$2'));sys.exit(0 if str(s.get('$2'))=='$3' else 1)"
+}
 carried() { # leg [minimum count]: the controller logged that the service moved to this leg
   [[ $(mdsc_log_count "protection: svc-3 is carried by the $1") -ge ${2:-1} ]]
 }
@@ -163,11 +167,14 @@ until_ 90 "the primary is on n3 n4 n5" want_path expectedPrimaryPathRouterIds pr
 until_ 90 "the MDSC was told that the standby is active (it is asked for only after the primary is)" heard svc-3 standby active
 until_ 30 "the standby is on n3 n5, diverse from the primary" want_path expectedStandbyPathRouterIds protectedService "$D2" "$SSYM" || diag mdsc pce-d2
 "${COMPOSE[@]}" exec -T mdsc sh -c 'cat /var/salasim/shared/protection/svc-3.properties' | grep -E '^(phase|selected)=' | sed 's/^/     stored: /'
+until_ 30 "query-services through the controller: svc-3 is up" queried svc-3 oper-status up
+queried svc-3 selected-tunnel primary >/dev/null && ok "query-services: svc-3 is carried by the primary" || bad "query-services: wrong selected tunnel"
 
 step "12. the primary link fails: the controller moves the service to the standby"
 "$HERE/fault.sh" down && ok "carrier down on the primary's link" || bad "fault injection failed"
 until_ 60 "the MDSC was told that the primary of svc-3 is down" heard svc-3 primary down
 until_ 30 "the service is carried by the standby" carried standby || diag mdsc pce-d2
+until_ 30 "query-services: svc-3 is carried by the standby and still up" bash -c "$(declare -f restconf queried); EXP='$EXP'; RESTCONF='$RESTCONF'; queried svc-3 selected-tunnel standby && queried svc-3 oper-status up"
 
 replays() { restconf provision-services "$(mkbody protectedService create-protected)" | grep -q 'idempotent-replay'; }
 stored() { # leaf value: what the controller stored for svc-3
