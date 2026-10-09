@@ -1,5 +1,7 @@
 # P6 + M7:业务经 controller 开通,事实经 controller 出口(2026-10-09)
 
+> **2026-10-09 部分被取代**:见 `system-redesign-v3.md`(核心拥有历史库、键 `network_id` + UTC、会话不可暂停)。
+
 状态:计划,阶段 1 开工。来源:`pce-controller-boundary.md` 的 P6、M7、M3b,以及 2026-10-09 两轮交互确认。
 
 ## 1. 已确认的决定

@@ -1,6 +1,6 @@
 # 架构文档索引与优先级
 
-> 更新:2026-10-08。冲突时按下表从上到下的优先级裁决;被取代的内容在原文头部或原位标注。
+> 更新:2026-10-09。冲突时按下表从上到下的优先级裁决;被取代的内容在原文头部或原位标注。
 
 ## 活文档(按优先级)
 
@@ -8,6 +8,7 @@
 |---|---|---|
 | 1 | `control-system-architecture.md` (v2) | 分层与依赖规则、核心对象与权威来源、时间模型、仿真模块、保真度 |
 | 2 | `commercial-architecture.md` | 商业运营:SaaS、测试床池、计费、合规 |
+| 2a | `system-redesign-v3.md` | 四个组件(Backend、controller、PCE、emulator)的职责、接口与数据库;实施阶段 R0–R7(2026-10-09) |
 | 3 | `system-architecture.md` (v2) | 功能、软件工程、代码结构;实施阶段 P0–P7 与 M1 |
 | 4 | `platform-data-architecture.md` | 平台层表结构与已验证机制(分层与命名以 #1 为准) |
 | 5 | `network-native-database-design.md` | 核心事实表结构(键、时间轴、归属待按 #1 v2 重写) |
@@ -23,6 +24,10 @@
 | `database-redesign.md` | 存储形状 | `network-native-database-design.md` |
 | `telemetry-results-model.md` | 存储部分 | `network-native-database-design.md` |
 | `controller-hub-plan.md` | 故障经控制器 NETCONF 下发、节点按仿真时钟生效;Backend 经控制器启停时钟 | `control-system-architecture.md` v2 D8–D10 |
+| `backend-data-model.md` | 全文(按 run + 仿真时间、可暂停时钟) | `system-redesign-v3.md` §4 |
+| `network-native-database-design.md`、`network-native-ingest-spec.md` | 键与时间轴(`run_id`、`*_ms`) | `system-redesign-v3.md` §4.3 |
+| `p6-m7-plan.md` | 决定 7、8 | `system-redesign-v3.md` V1、V4 |
+| `pce-controller-boundary.md` | PCE 北向为业务级 `create-services` | `system-redesign-v3.md` V3 |
 | `rebaseline-2026-10-06.md` | R3 单一 YANG 工件 | 核心 + sim 两个工件(2026-10-07) |
 
 ## 待办
