@@ -1,6 +1,6 @@
 # Backend 迁到 Postgres(P6+M7 阶段 3 的前置)——范围、方案与阶段
 
-状态:阶段 0、1 完成(2026-10-09:Backend `c04c5b9`、`635ccc6`,在临时 Postgres 14.17 上验证,13 个测试加 smoke 通过;未推送);阶段 2 起未开工。2026-10-09,用户确认:**一次性全迁**(不留 SQLite 的运行与业务表)、**asyncpg 异步客户端**、**只在 Backend 里做**(暂不让参考场景跑 Postgres,集成测试用本地临时 Postgres)。本文档是 `p6-m7-plan.md` 阶段 3 的细化。
+状态:阶段 0、1 完成,阶段 2 进行中(2026-10-09:Backend `c04c5b9`、`635ccc6`、`a07ae51`(RunStore,已推送)、`cc2b243`(DeploymentStore、ClockStore,未推送);在临时 Postgres 14.17 上 41 个测试加 smoke 通过)。已完成的存储:Run、Deployment、Clock;待做:Operation(含批量任务)、Service、拓扑快照、故障与投递、小块。2026-10-09,用户确认:**一次性全迁**(不留 SQLite 的运行与业务表)、**asyncpg 异步客户端**、**只在 Backend 里做**(暂不让参考场景跑 Postgres,集成测试用本地临时 Postgres)。本文档是 `p6-m7-plan.md` 阶段 3 的细化。
 
 ## 1. 为什么这是一个独立的大工程
 
@@ -94,3 +94,12 @@ Backend 现在把运行、业务、隧道、操作队列、部署、时钟、拓
 - **`ctl` schema:** 22 张表,未含隧道与绑定。`exp.run` 保持纯净,Backend 额外的运行字段放在 `ctl.run`(一对一);服务的可变状态在 `ctl.service`;`derived_state_cached` 不再保存(服务状态来自 controller 的 `query-services` 与事实)。
 - **一个设计后果:** `ctl.deployment` 与 `exp.run` 之间没有外键(`exp` 是网络侧),删除部署时存储必须对它的每个运行调用 `exp.drop_run`,与删除部署在同一事务里;测试已记录这一点。
 - **`exp.service_intent` 的外键要求节点先存在:** 运行开始时要把清单(域与节点)写进 `exp.domain`/`exp.node`;未知节点的业务会被拒绝(外键冲突),存储层要把它转成 4xx。
+
+## 7. 阶段 2 已做存储的要点(2026-10-09)
+
+- **每个存储是一个 async 类,方法名与结果形状沿用旧存储**(`run_store.RunStore`、`deployment_store.DeploymentStore`、`clock_store.ClockStore`),以便阶段 4 改调用方时只加 `await`。没有抽 Protocol:只保留 Postgres 一种实现,契约由真实 Postgres 上的测试承担。
+- **并发由行锁承担。** SQLite 的全局锁换成 `SELECT ... FOR UPDATE`:改 payload、改运行状态、改部署元数据都先锁行。变异检验确认测试是真的:去掉锁后,12 个并发的时钟补丁只落下 5 个,部署元数据补丁同样丢失。
+- **活动运行是 `ctl.clock_state.active_run_id` 一列,** 对外仍以 `activeSimulatorRunId` 出现在 state 里,调用方看到的形状不变;payload 里不再存这个键。
+- **时钟锚点:** `ClockStore` 在写入完整的锚点(`wallAnchorMs`、`simAnchorMs`、`speedup`、`phase`,且有活动运行)时,同时追加到 `ctl.clock_anchor`;`sim_time_ms(run, 真实时刻)` 和 `run_at(真实时刻)` 为只带真实时间戳的事实找仿真时间与所属运行(决定 8 的实现)。不完整的锚点或未知阶段只是不记录,不会让时钟写入失败。
+- **删除部署是一个事务:** 先对每个运行 `exp.drop_run`(连分区与全部网络事实),再删操作、告警确认、部署;`SET LOCAL lock_timeout='15s'`。这取代了旧存储里"分三个文件、不原子"的清理。
+- **jsonb** 的编码器沿用旧存储的写法(UTF-8 可读,不能表示的值写成文本)。
