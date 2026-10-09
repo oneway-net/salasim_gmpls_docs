@@ -27,6 +27,14 @@ case "${1:-up}" in
     echo "== nodes";        "${COMPOSE[@]}" up -d n1 n2 n3 n4 n5
     echo "== domain PCEs";  "${COMPOSE[@]}" up -d pce-d1 pce-d2
     wait_http "http://127.0.0.1:$D1/api/v1/health" pce-d1 90; wait_http "http://127.0.0.1:$D2/api/v1/health" pce-d2 90
+    echo "== core database"; "${COMPOSE[@]}" up -d core-db
+    for ((i = 0; i < 90; i++)); do
+      "${COMPOSE[@]}" exec -T core-db pg_isready -U postgres -d salasim_core -q 2>/dev/null \
+        && "${COMPOSE[@]}" exec -T core-db psql -U postgres -d salasim_core -tAc "select 1 from pg_roles where rolname='salasim_mdsc'" 2>/dev/null | grep -q 1 && break
+      sleep 1
+    done
+    "${COMPOSE[@]}" exec -T core-db psql -U postgres -d salasim_core -tAc "select 1 from pg_roles where rolname='salasim_mdsc'" | grep -q 1 \
+      || { echo "the core database never came up with its baseline; see: ${COMPOSE[*]} logs core-db" >&2; exit 1; }
     echo "== PNCs + MDSC";  "${COMPOSE[@]}" up -d pnc-d1 pnc-d2 mdsc
     echo "== waiting for the MDSC to write composed-topology.json (parent PCE needs it at start)"
     for ((i = 0; i < 180; i++)); do

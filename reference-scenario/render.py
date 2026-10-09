@@ -18,6 +18,8 @@ import shutil
 
 HERE = pathlib.Path(__file__).resolve().parent
 IMAGE_TAG = "ref"
+POSTGRES_IMAGE = "docker.m.daocloud.io/library/postgres:14"
+MDSC_DB_PASSWORD = "salasim-lab-mdsc"
 
 
 def load(path: pathlib.Path) -> dict:
@@ -179,7 +181,8 @@ def addresses(s: dict) -> dict:
     """container name -> fixed address (node router ids are real addresses on the compose network)."""
     a = {n["name"]: n["routerId"] for n in s["nodes"]}
     a.update({"parent-pce": "10.77.9.10", "pce-d1": "10.77.9.11", "pce-d2": "10.77.9.12", "pnc-d1": "10.77.9.21",
-              "pnc-d2": "10.77.9.22", "mdsc": "10.77.9.30", "medium": "10.77.9.40"})
+              "pnc-d2": "10.77.9.22", "mdsc": "10.77.9.30", "medium": "10.77.9.40",
+              "core-db": "10.77.9.50"})
     return a
 
 
@@ -342,9 +345,19 @@ def compose(s: dict) -> str:
                 "SALASIM_CONTROLLER_PNC_NATIVE_TOPOLOGY_FILE": f"/scenario/domains/{did}/native.json",
                 "SALASIM_CONTROLLER_NETCONF_PASSWORD_FILE": "/scenario/credentials/netconf-password",
                 "SALASIM_CONTROLLER_MPI_SSH_PASSWORD": pw, "JAVA_OPTS": "-Xms128m -Xmx512m"})
+    # the core database: the MDSC keeps its services in the intent schema (docs/system-redesign-v3.md, V2). The baseline is
+    # applied by the image's first-start scripts; the MDSC logs in as a role that may write the intent schema and nothing else
+    svc("core-db", f"{POSTGRES_IMAGE}", None,
+        environment={"POSTGRES_DB": "salasim_core", "POSTGRES_PASSWORD": "salasim-lab-db",
+                     "POSTGRES_HOST_AUTH_METHOD": "scram-sha-256"},
+        volumes=["./core-db:/docker-entrypoint-initdb.d:ro"])
     svc("mdsc", f"salasim/controller:{IMAGE_TAG}", None, command="mdsc", user="0:0", ports=[(18181, p["mdscRestconf"])],
         volumes=["shared:/var/salasim/shared"],
         environment={
+            "SALASIM_CONTROLLER_INTENT_JDBC_URL": f"jdbc:postgresql://{ad['core-db']}:5432/salasim_core",
+            "SALASIM_CONTROLLER_INTENT_USER": "salasim_mdsc",
+            "SALASIM_CONTROLLER_INTENT_PASSWORD_FILE": "/scenario/credentials/intent-password",
+            "SALASIM_CONTROLLER_INTENT_NETWORK_ID": "ref",
             "SALASIM_CONTROLLER_INVENTORY_FILE": "/scenario/inventories/mdsc.json",
             "SALASIM_CONTROLLER_NETCONF_PASSWORD_FILE": "/scenario/credentials/netconf-password",
             "SALASIM_CONTROLLER_MDSC_COMPOSED_TOPOLOGY_FILE": "/var/salasim/shared/composed-topology.json",
@@ -382,6 +395,13 @@ def main() -> int:
     for name, inv in inventories(s).items():
         write(out / "inventories" / f"{name}.json", json.dumps(inv, indent=2) + "\n")
     write(out / "credentials" / "netconf-password", s["netconfPassword"])
+    write(out / "credentials" / "intent-password", MDSC_DB_PASSWORD)
+    # the core database's first-start scripts: the baseline (db/core/schema/apply.sql, \\i lines inlined) and the MDSC's login
+    schema_dir = HERE.parent.parent / "salasim_gmpls_backend" / "db" / "core" / "schema"
+    files = [line.split()[1] for line in (schema_dir / "apply.sql").read_text().splitlines() if line.startswith("\\i ")]
+    write(out / "core-db" / "10-core-schema.sql", "\n".join((schema_dir / f).read_text() for f in files))
+    write(out / "core-db" / "20-mdsc-login.sql",
+          f"CREATE ROLE salasim_mdsc LOGIN PASSWORD '{MDSC_DB_PASSWORD}' IN ROLE core_intent_writer;\n")
     if os.environ.get("REF_PCE_DEBUG"):
         # the PCE's own logging configuration with the PCEServer logger at DEBUG (routing no-path diagnosis, PCEP detail)
         base = (HERE.parent.parent / "salasim_gmpls_pce" / "src" / "main" / "resources" / "log4j2.xml").read_text()
