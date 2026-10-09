@@ -289,6 +289,16 @@ Backend 拆成两个顶层包、两个进程,共用一个平台库(§4.2)。
 > - **有意推迟的契约改动**(按 G11"先建新路径、切换、同一变更删旧路径",破坏性改动和改代码放在同一阶段):`salasim-service-fleet` 去掉调用方给隧道、删除时不再要源宿、描述改为"controller 持久化意图"——随 R2;`lsp-update` 删除 `service-id`/`tunnel-id`、删除 `salasim-service`(PCE 业务级模块)——随 R3。在那之前,摄取用 `lsp-name`,缺省时用 `<service-id>/<tunnel-id>`(与 controller 将来给的名字相同)。
 > - **未做**:`ingest` 还没有订阅者(SSE)与派生构建器(R1);平台库里旧 SQLite 存储的调用方(约 650 处)未迁移(R6)。
 
+> **R1 实施状态(2026-10-10,本地提交,未推送)**:核心历史服务(backend `d131ff0`,`salasim_core_history/`):① `subscriber.py`:订阅 MDSC 的 RESTCONF 通知流(SSE),断线重连带退避;**每次断开都在 `ingest.consumer.gap_since` 记下断开时刻**,只有 catch-up 报告"已完整"才清除;默认没有 catch-up(`query-services` 读回要等 MDSC 能按状态查询,见 R2),所以缺口一直如实记着;② `derive.py`:服务健康(HEALTHY/DEGRADED/UNAVAILABLE/STOPPED)由 LSP 状态、保护选择、业务生命周期推导,规则写在函数里并有单测(未观察到的服务不产生区间;背靠备用也算降级,直到选择回切);迟到的事实通过输入修订号重建;③ `maintenance.py`:提前建分区、按保留期删整月。Postgres 测试 52 项过;对 derive 与 subscriber 各做变异检查,其中 derive 的"背靠备用"规则第一轮没被抓到,补了测试后抓到。
+>
+> **R2a 实施状态(controller `66a31ad`,本地)**:MDSC 的保护状态从属性文件改存核心库 `intent` schema(`JdbcProtectionStore`:服务、隧道、隧道最近读数、保护状态、生命周期事件;一个事务一次保存;删除即整体删除);MDSC 没有 `salasim.controller.intent.jdbc-url` 不启动;`FileProtectionStore` 与属性序列化已删。测试以 MDSC 自己的登录角色(`core_intent_writer` 的成员)连真实 Postgres,8 项通过(不设 `SALASIM_TEST_PG_URL` 时这些测试**跳过并明说**)。参考场景新增 `core-db` 容器(`docs` `599385a`),**未在测试机上跑过**:它需要拉 postgres 镜像、controller 镜像构建时能取到 PostgreSQL JDBC 驱动。
+>
+> **R3a 实施状态(PCE `5f9632a`,本地)**:`salasim-pce-lsp` 的 `add-lsp`/`remove-lsp`/`query-lsps`(按名字、按状态分页)与 `lsp-state-changed` 通知,建在现有 `ServiceProvisioner` 上(LSP 名 `<组>/<成员>` 在 PCE 内部拆成业务/隧道,直到注册表按名字做键);`update-lsp`、`compute-paths` 在模型里,**明确拒绝**(`operation-not-supported`),不假装成功。11 项进程内 NETCONF 测试通过。
+>
+> **顺序调整(技术判断,待你确认)**:原计划 R2(controller 持久化意图)在 R3(PCE 北向改 LSP 级)之前。做到 R2a 后发现:controller 现在对**不受保护**的业务是把调用方的请求原样转发给 PCE(`NamespaceRebase`),"控制器不存业务状态";要让它持有所有业务的意图、发 `service-lifecycle` 事实、按状态查询,必须把所有业务(受保护或不受保护)交给同一个管理器,由它展开成 LSP 并经 `add-lsp` 下发——这正是现有 `ProtectionManager` 的形状(重试、读回、轮询、恢复都已有测试)。所以 **R2b 与 R3b 合并为一步**:把 `ProtectionManager` 推广为服务管理器(不受保护 = 只有主隧道),`PceTunnelPort` 与 PNC 转发改用 LSP 级 RPC,`provision-services` 变成"解析 → 管理器 → 从视图作答",随后删除旧的 `salasim-service`(PCE 业务级模块)。这一步会同时改 controller、PNC、PCE 测试与参考场景,单独成一个提交序列。
+>
+> **环境发现(影响以后所有 Java 测试)**:本机 JVM 默认开启 SOCKS 代理(`127.0.0.1:10808`),而 `socksNonProxyHosts` 里的 `127.0.0.0/8` 不是 Java 支持的写法,所以连环回地址的 JDBC 会失败("UnknownHostException: 127.0.0.1")。需要加 `-DsocksNonProxyHosts=localhost|127.0.0.1|::1`。沙箱里 Bash 取不到 Maven Central 与 Postgres,所以新增 `.claude/pg-java.sh`(preview 进程,联网,起临时 Postgres 并跑 Maven 测试)。
+
 顺序理由:先定契约(R0),再让事实有地方去(R1),再让意图可靠(R2),然后 PCE 才能安全地丢掉业务和重试(R3、R4);emulator 独立(R5);平台/仿真最后,因为它依赖前面全部的北向与视图(R6)。
 
 ## 8. 风险与未验证
