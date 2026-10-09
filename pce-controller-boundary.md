@@ -182,3 +182,5 @@ D2(PCE 负责腿的顺序和降级回退)与"保护策略归 controller"有张�
 - MDSC 能否订阅已挂载 PCE 的通知(C1-0 spike 未做)。
 - 单个 NETCONF 消息的大小上限(批量 256 条)。
 - 域内业务经 PNC 转发的延迟与失败语义(M4)。
+
+**S0 验证(2026-10-09,测试机 10.112.61.137,ref-run23):`check.sh` 15 步 RESULT: PASS,54 项通过、0 项失败。** 范围:yang c13f0ce、pce dd50875、controller 283ecc9、docs 889ba90(含 M5+M6 阶段 B–E 的全部改动,包括删除 `ProtectionGroupRegistry`)。首轮跑出四个缺陷,均已修并带测试:① PNC 的 MPI 没有 `query-services`,保护管理器读不到备隧道状态(controller e6eda12);② PCC 在链路故障后移除 LSP,该 LSP 先从 ReportDB 消失,隧道从未被报成 down,现在直接以 PCRpt(O 标志、移除)为信号(pce bb3dfaa);③ LSP 被移除后没人重建:PCE 对 down 隧道的重复请求视为新一次尝试、失败回到 down 而非 failed(pce dd50875),控制器对 down 的腿定时重新请求(controller 3bc20cd);④ 删除调用的迟到回调把已删业务的状态文件写回,现在只保存仍在表中的业务(controller 283ecc9)。**未验证:** 重复运行/压力、多业务并发、PCE 重启、阶段 E 之后父 PCE 的其他路径(预计算);重建后的主隧道在哪条路径上(脚本里的 ERO 探测为空,没有断言)。
