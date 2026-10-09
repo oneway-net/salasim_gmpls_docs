@@ -1,6 +1,6 @@
 # Backend 迁到 Postgres(P6+M7 阶段 3 的前置)——范围、方案与阶段
 
-状态:阶段 0、1 完成,阶段 2 进行中(2026-10-09:Backend `c04c5b9`、`635ccc6`、`a07ae51`(RunStore,已推送)、`cc2b243`(DeploymentStore、ClockStore,未推送);在临时 Postgres 14.17 上 41 个测试加 smoke 通过)。已完成的存储:Run、Deployment、Clock;待做:Operation(含批量任务)、Service、拓扑快照、故障与投递、小块。2026-10-09,用户确认:**一次性全迁**(不留 SQLite 的运行与业务表)、**asyncpg 异步客户端**、**只在 Backend 里做**(暂不让参考场景跑 Postgres,集成测试用本地临时 Postgres)。本文档是 `p6-m7-plan.md` 阶段 3 的细化。
+状态:阶段 0、1 完成,**数据模型已按系统需要重新设计(`backend-data-model.md`,2026-10-09)**,阶段 2 进行中(2026-10-09:Backend `c04c5b9`、`635ccc6`、`a07ae51`(RunStore,已推送)、`cc2b243`(DeploymentStore、ClockStore,未推送);在临时 Postgres 14.17 上 41 个测试加 smoke 通过)。已完成的存储:Run、Deployment、Clock;待做:Operation(含批量任务)、Service、拓扑快照、故障与投递、小块。2026-10-09,用户确认:**一次性全迁**(不留 SQLite 的运行与业务表)、**asyncpg 异步客户端**、**只在 Backend 里做**(暂不让参考场景跑 Postgres,集成测试用本地临时 Postgres)。本文档是 `p6-m7-plan.md` 阶段 3 的细化。
 
 ## 1. 为什么这是一个独立的大工程
 
@@ -18,7 +18,7 @@ Backend 现在把运行、业务、隧道、操作队列、部署、时钟、拓
 
 存储全是**同步**类,共用一个连接和一把 `RLock`,通过 `asyncio.to_thread` 被异步路由调用,事务跨多个存储(`create_service` 内部调 `create_tunnel`,删除部署在一个事务里清操作)。改用 asyncpg(异步)意味着**所有调用方都要改成 `await`**,锁与事务的语义要重新设计。
 
-## 2. 新库里没有对应结构的东西
+## 2. 新库里没有对应结构的东西(**已被 `backend-data-model.md` 取代:不再逐表对应旧结构,按系统需要重新设计**)
 
 `db/schema/` 是"网络原生"的事实库,只有事实和实验意图;下面这些是 Backend 的**控制状态**,新库里没有位置,一次性全迁就必须为它们设计新表(建议单独的 `ctl` schema):
 
@@ -103,3 +103,12 @@ Backend 现在把运行、业务、隧道、操作队列、部署、时钟、拓
 - **时钟锚点:** `ClockStore` 在写入完整的锚点(`wallAnchorMs`、`simAnchorMs`、`speedup`、`phase`,且有活动运行)时,同时追加到 `ctl.clock_anchor`;`sim_time_ms(run, 真实时刻)` 和 `run_at(真实时刻)` 为只带真实时间戳的事实找仿真时间与所属运行(决定 8 的实现)。不完整的锚点或未知阶段只是不记录,不会让时钟写入失败。
 - **删除部署是一个事务:** 先对每个运行 `exp.drop_run`(连分区与全部网络事实),再删操作、告警确认、部署;`SET LOCAL lock_timeout='15s'`。这取代了旧存储里"分三个文件、不原子"的清理。
 - **jsonb** 的编码器沿用旧存储的写法(UTF-8 可读,不能表示的值写成文本)。
+
+## 8. 数据模型重新设计之后(2026-10-09)
+
+用户要求不受历史设计影响。`backend-data-model.md` 按"意图、命令、事实、工作、投影"五种数据重新划分,结果:
+
+- `ctl` 从 22 张表缩到 6 张:`deployment`、`clock_anchor`、`task`、`task_event`、`profile`(过渡)、`alarm_acknowledgement`。
+- `exp` 小改:`exp.run` 加"一个测试床至多一个活动运行"的唯一索引;`exp.service_intent` 带自己的计划(`start_ms`、`end_ms`、`planning`、`label`);`exp.node` 带 `router_id`;`exp.service_event` 带 `detail`;视图 `exp.service_current`。
+- 已写存储相应调整:`RunStore`(只写 `exp.run`,清单写入)、`ClockStore`(只有锚点)、`DeploymentStore`(按 `testbed_id` 删运行);新增 `WorkloadStore`(业务意图与事件)、`TaskStore`(带租约的队列)。
+- **阶段 2 剩下的**不再是"操作、拓扑快照、故障与投递"的逐个移植,而是:配置档并入 catalog(过渡期用 `ctl.profile`)、告警确认、以及用新存储重写调用方(阶段 4)。
