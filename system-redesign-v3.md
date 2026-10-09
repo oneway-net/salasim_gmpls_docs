@@ -281,6 +281,14 @@ Backend 拆成两个顶层包、两个进程,共用一个平台库(§4.2)。
 | **R6 平台 + 仿真** | 两个顶层包;平台库 DDL 接入;`replay`、`fleet`(设 `MEDIUM_BASE_URL`)、`results`;删 SQLite 与直接调用 | 测试机上由平台发起一次会话:开通 → 故障 → 结果 |
 | **R7 前端** | 改读平台 API 新形状 | 浏览器验证 |
 
+> **R0 实施状态(2026-10-09/10,本地提交,未推送)**:
+> - **YANG**(yang `a843d46`):新模块 `salasim-pce-lsp`(`add-lsp`/`update-lsp`/`remove-lsp`/`compute-paths`/`query-lsps`、`lsps` 运行态、`lsp-state-changed` 通知);`salasim-fact` 新修订 2026-10-09,新增 kind `service-lifecycle`、`alarm`,`lsp-update` 增 `lsp-name`;`salasim-service-types` 把 `path-planning` 提成 grouping(数据树不变)。验证:netconf 的 yangtools 全工件解析测试(67 个模块同一 schema 上下文,netconf `2dd77ff`;对它做过变异,能抓到未解析的 grouping);controller 172 项测试、PCE 的 NETCONF/事实测试通过。
+> - **发现**:controller 的 `FactPublisher` 把 `salasim-fact` 的修订写死在代码里,升修订后运行时找不到模块。已改为 2026-10-09,并新增测试把代码里写死的修订与工件核对(controller `5de5aec`)。
+> - **两套 DDL**(backend `2b8da2b`):`db/core`(`intent` + 事实 schema,`network_id` + UTC,按月分区 + DEFAULT,三个角色,`core_api_v1` 22 个视图)与 `db/platform`(原平台表 + `platform.testbed/task/profile` + `sim`)。`db/apply.sh core|platform`。验证:临时 Postgres 14.17 上 `CORE SMOKE OK`、`PLATFORM OK`、`SIM OK`;变异检查 53 例全部被抓到(其中 1 例首轮存活,补了"清除之后的确认不算这一次"的测试)。
+> - **调用方随之迁移**(同一提交):`run_store`/`clock_store`/`deployment_store` 删除,改为 `session_store`(无暂停)、`testbed_store`、`action_store`;`workload_store` 改为 `sim.workload_item`;`task_store` 改为 `platform.task`(`run_id` → `scope`);`fact_ingest` 迁入 `salasim_core_history/ingest.py`,按事实的 `network-id` 归属网络、只存 UTC,新增 `service-lifecycle`、`alarm` 的落库。40 项 Python 测试过,对 ingest 做过两处变异,恰好对应的两项失败。
+> - **有意推迟的契约改动**(按 G11"先建新路径、切换、同一变更删旧路径",破坏性改动和改代码放在同一阶段):`salasim-service-fleet` 去掉调用方给隧道、删除时不再要源宿、描述改为"controller 持久化意图"——随 R2;`lsp-update` 删除 `service-id`/`tunnel-id`、删除 `salasim-service`(PCE 业务级模块)——随 R3。在那之前,摄取用 `lsp-name`,缺省时用 `<service-id>/<tunnel-id>`(与 controller 将来给的名字相同)。
+> - **未做**:`ingest` 还没有订阅者(SSE)与派生构建器(R1);平台库里旧 SQLite 存储的调用方(约 650 处)未迁移(R6)。
+
 顺序理由:先定契约(R0),再让事实有地方去(R1),再让意图可靠(R2),然后 PCE 才能安全地丢掉业务和重试(R3、R4);emulator 独立(R5);平台/仿真最后,因为它依赖前面全部的北向与视图(R6)。
 
 ## 8. 风险与未验证
