@@ -169,19 +169,23 @@ step "12. the primary link fails: the controller moves the service to the standb
 until_ 60 "the MDSC was told that the primary of svc-3 is down" heard svc-3 primary down
 until_ 30 "the service is carried by the standby" carried standby || diag mdsc pce-d2
 
-step "13. the link comes back: after wait-to-revert the service returns to the primary"
-"$HERE/restore.sh" >/dev/null && ok "carrier up written" || bad "restore failed"
-until_ 120 "the service is carried by the primary again (wait-to-revert 10 s, revertive)" carried primary || diag mdsc pce-d2
-
 replays() { restconf provision-services "$(mkbody protectedService create-protected)" | grep -q 'idempotent-replay'; }
+stored() { # leaf value: what the controller stored for svc-3
+  "${COMPOSE[@]}" exec -T mdsc cat /var/salasim/shared/protection/svc-3.properties | grep -E "^$1=" | cut -d= -f2
+}
 
-step "14. the controller restarts: it continues from what it stored"
+step "13. the controller restarts while the standby carries the service: it continues from what it stored"
+echo "     stored before the restart: selected=$(stored selected) phase=$(stored phase)"
+[[ "$(stored selected)" == STANDBY ]] && ok "the selection of the standby is stored" || bad "the selection was not stored"
 "${COMPOSE[@]}" restart mdsc >/dev/null 2>&1 && ok "mdsc restarted" || bad "mdsc restart failed"
 until_ 90 "the restarted controller loaded the protected service" bash -c "${COMPOSE[*]} logs mdsc 2>&1 | grep -a 'protected service(s) loaded' | tail -1 | grep -qv ' 0 protected'"
 until_ 60 "the MDSC is mounted to its PCEs again (a repeated provision answers as a replay)" replays
-"$HERE/fault.sh" down >/dev/null && ok "carrier down again" || bad "fault injection failed"
-until_ 60 "the restarted controller moves the service to the standby again" carried standby 2 || diag mdsc pce-d2
-"$HERE/restore.sh" >/dev/null
+[[ "$(stored selected)" == STANDBY ]] && ok "still carried by the standby after the restart" || bad "the selection was lost by the restart"
+
+step "14. the link comes back: the lost primary is asked for again, and after wait-to-revert the service returns to it"
+"$HERE/restore.sh" >/dev/null && ok "carrier up written" || bad "restore failed"
+until_ 120 "the service is carried by the primary again (wait-to-revert 10 s, revertive), decided by the restarted controller" carried primary || diag mdsc pce-d2
+echo "     primary path now: $(ero "$D2" "$PSYM")   (n3 n5 would be the link the standby uses)"
 
 step "15. remove the protected service: no tunnels listed, both legs go"
 if remove protectedService; then ok "delete admitted"; else bad "delete not admitted"; diag mdsc pce-d2; fi
