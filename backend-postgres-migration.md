@@ -1,6 +1,6 @@
 # Backend 迁到 Postgres(P6+M7 阶段 3 的前置)——范围、方案与阶段
 
-状态:计划,未开工。2026-10-09,用户确认:**一次性全迁**(不留 SQLite 的运行与业务表)、**asyncpg 异步客户端**、**只在 Backend 里做**(暂不让参考场景跑 Postgres,集成测试用本地临时 Postgres)。本文档是 `p6-m7-plan.md` 阶段 3 的细化。
+状态:阶段 0、1 完成(2026-10-09:Backend `c04c5b9`、`635ccc6`,在临时 Postgres 14.17 上验证,13 个测试加 smoke 通过;未推送);阶段 2 起未开工。2026-10-09,用户确认:**一次性全迁**(不留 SQLite 的运行与业务表)、**asyncpg 异步客户端**、**只在 Backend 里做**(暂不让参考场景跑 Postgres,集成测试用本地临时 Postgres)。本文档是 `p6-m7-plan.md` 阶段 3 的细化。
 
 ## 1. 为什么这是一个独立的大工程
 
@@ -67,8 +67,8 @@ Backend 现在把运行、业务、隧道、操作队列、部署、时钟、拓
 
 | 阶段 | 内容 | 验收 |
 |---|---|---|
-| **0 基础设施** | `asyncpg` 依赖;`pg.py`(连接池、事务、辅助函数);临时 Postgres 的测试夹具与 `preview_start` 配置;`db/apply` 的 Python 版(建库加默认组织);对 `db/schema` 跑一遍的烟测 | 夹具起库、应用 DDL、写一行 `exp.run` 并读回 |
-| **1 DDL 补全** | `ctl` schema:`deployment`、`clock_anchor`、`operation`、`operation_log`、`service_state`、`profile`、冷库三表;按调研逐表定列;删除不再需要的隧道与绑定表设计 | DDL 在临时库上通过,带冒烟与变异测试(同 2026-10-07 做法) |
+| **0 基础设施(已完成)** | `asyncpg` 依赖;`pg.py`(连接池、事务、辅助函数);临时 Postgres 的测试夹具与 `preview_start` 配置;`db/apply` 的 Python 版(建库加默认组织);对 `db/schema` 跑一遍的烟测 | 夹具起库、应用 DDL、写一行 `exp.run` 并读回 |
+| **1 DDL 补全(已完成,`db/schema/15_ctl.sql`)** | `ctl` schema:`deployment`、`clock_anchor`、`operation`、`operation_log`、`service_state`、`profile`、冷库三表;按调研逐表定列;删除不再需要的隧道与绑定表设计 | DDL 在临时库上通过,带冒烟与变异测试(同 2026-10-07 做法) |
 | **2 存储接口与 Postgres 实现(自底向上)** | 先 `ClockStore`、`RunStore`,再 `DeploymentStore`、`ProfileStore`、`ServiceStore`、`OperationStore`、`TopologyStore`;每个先写契约测试再写实现 | 每个存储的契约测试通过 |
 | **3 隧道身份改造** | 删 `TunnelStore`、绑定表;隧道 id 取 controller 的;共享保护拒绝;删除 PCE 直连与 `/protection-groups` 注册(P6 阶段 4 的一部分) | 业务创建、查询、删除的测试通过 |
 | **4 调用方改异步** | 路由、`api_helpers`、`worker`、`topology_clock_service` 中约 650 行调用点改成 `await`;去掉 `asyncio.to_thread` 包装;裸 SQL 改走存储 | 现有 API 测试(改造后)通过 |
@@ -85,3 +85,12 @@ Backend 现在把运行、业务、隧道、操作队列、部署、时钟、拓
 - **状态机错位:** 部署有 12 个状态,新库里没有;保留为 `ctl.deployment.status`,不进 `exp.run`。
 - **时钟:** Backend 在暂停与恢复时重新定锚,`exp.run` 只有一个锚点;用 `ctl.clock_anchor` 事件表承载,`exp.run.clock_anchor_wall` 只填首个锚点。
 - **未核实:** PCE/controller 的事实带的是哪个运行 id(它们现在不带);Backend 如何给事实找运行(决定 8:按时间)需要一个"当前活动运行区间"的查询,首版假设同一时刻只有一个活动运行。
+
+## 6. 阶段 0、1 的实际做法与发现(2026-10-09)
+
+- **沙箱连不上 Postgres。** Bash 沙箱对 `127.0.0.1` 的 TCP 和 Unix socket 连接都返回 `Operation not permitted`。测试因此通过 `preview_start` 的 `.claude/pg-pytest.sh` 运行:它起一个临时实例(端口 55434,`fsync` 关闭),用 `db/schema` 建模板库 `salasim_template`,再带着 `SALASIM_TEST_PG_DSN` 跑 pytest(参数写在 `.claude/pg-pytest.args`),最后对模板的一份拷贝跑 `db/tests/smoke.sql`。结果从预览日志里读。`.claude/` 不在任何 git 仓库里,这几个脚本不随代码提交。
+- **没有 DSN 时测试跳过,且跳过信息写明"未运行"。** `pg_case` 装饰器给每个 async 测试一个从模板拷贝来的新库(默认组织已建),函数签名清空以免 pytest 把 `db` 当夹具。
+- **asyncpg 的两处习惯,写存储代码时都要遵守:** `timestamptz` 参数必须是 `datetime`(不收 ISO 文本);jsonb 通过连接上的编解码器收发 Python 值,不要自己 `json.dumps`。
+- **`ctl` schema:** 22 张表,未含隧道与绑定。`exp.run` 保持纯净,Backend 额外的运行字段放在 `ctl.run`(一对一);服务的可变状态在 `ctl.service`;`derived_state_cached` 不再保存(服务状态来自 controller 的 `query-services` 与事实)。
+- **一个设计后果:** `ctl.deployment` 与 `exp.run` 之间没有外键(`exp` 是网络侧),删除部署时存储必须对它的每个运行调用 `exp.drop_run`,与删除部署在同一事务里;测试已记录这一点。
+- **`exp.service_intent` 的外键要求节点先存在:** 运行开始时要把清单(域与节点)写进 `exp.domain`/`exp.node`;未知节点的业务会被拒绝(外键冲突),存储层要把它转成 4xx。
