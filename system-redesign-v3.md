@@ -305,7 +305,9 @@ Backend 拆成两个顶层包、两个进程,共用一个平台库(§4.2)。
 > - **PCE**(`cc29910`):`salasim-service` 模块与 `create/delete/query-services`、`service-state-changed` 全部删除;共用的树工具移入 `RpcTrees`;`lsp-update` 事实只用 `lsp-name`;PCE 测试 978 项,仅有的 5 个错误是已知的 `HttpControlAsyncTest`(沙箱不能绑端口)。
 > - **YANG**(`552494d`、`0e9ac69`、`6dd843d`):`salasim-service-fleet`(2026-10-10):调用方不再列隧道,删除只带 service-id;`salasim-service` 删除;`salasim-service-types` 删去只有旧模块用的三个 grouping;`salasim-fact`(2026-10-10):`lsp-update` 的 `service-id`/`tunnel-id` 删除,`lsp-name` 必填。netconf 的整工件解析测试现在按清单核对每个模块的修订,不再写死。
 > - **参考场景**(docs `d7fa372`)按新契约改写(请求不带隧道、状态读核心库、检查生命周期事实),**没有在任何机器上跑过**;README 记下了三处未验证。
-> - **仍然未做**:① 重试策略(`intent.retry`):PCE 的退避与重试还在,controller 对失败的主隧道还没有自己的重试;这是 R4 删除 PCE 重试的前提;② 保护计时器的截止时刻持久化(`hold_off_until`、`wait_to_revert_until` 已有列但管理器未写);③ `update-lsp`、`compute-paths` 仍为 `operation-not-supported`;④ 组合拓扑经 NETCONF 交给父 PCE(现在仍是共享文件);⑤ 历史服务的 catch-up(用 `query-services` 补读)和链路级告警来源;⑥ PCE 内部注册表仍以"业务/隧道"为键,LSP 名只在北向适配。
+> - **仍然未做**:①② 已在下一条完成(重试策略、截止时刻持久化);③ `update-lsp`、`compute-paths` 仍为 `operation-not-supported`;④ 组合拓扑经 NETCONF 交给父 PCE(现在仍是共享文件);⑤ 历史服务的 catch-up(用 `query-services` 补读)和链路级告警来源;⑥ PCE 内部注册表仍以"业务/隧道"为键,LSP 名只在北向适配。
+
+> **controller 重试与计时器截止时刻(2026-10-10,controller 本地提交;用户:"先做第 1 项,同时做第 2 项")**:① 重试策略 `RetryPolicy`(指数退避,设置 `salasim.controller.retry.initial-ms/max-ms/factor/max-attempts`,默认 3 s、60 s、2.0、10 次):曾建立过、后来丢了路径的隧道**不限次数**地重新请求(没有路径可能要等链路回来),建立失败的隧道最多 `max-attempts` 次然后放弃,直到调用方再次请求这个业务(再次请求立即重试);对备用隧道"永久拒绝"不自动重试;② 每个隧道的重试状态(次数、下次时刻、放弃时刻、最近的失败类型)存 `intent.retry`,保护的 hold-off 与 wait-to-revert 截止时刻存 `intent.protection`:重启后退避不归零,只等剩下的时间,已过期的立即执行,不再适用的截止时刻被丢弃;③ 生命周期:仍在重试的失败主隧道算已受理(admitted),放弃之后才是 rejected。测试:管理器 9 项新增(退避序列、回来后重置、有限次数后放弃、再次请求重新开始、重启保留退避、备用被拒、hold-off/wait-to-revert 跨重启、截止时刻被丢弃),对 4 个规则做变异检查全被抓到;数据库 3 项新增(重试行与截止时刻往返、无重试时不留行、仍在重试不算拒绝),真实 Postgres 上 21 项全过。controller 共 210 项。**这满足了 R4 删除 PCE 重试的前提**(controller 现在自己决定何时再问、问几次、何时放弃)。
 
 顺序理由:先定契约(R0),再让事实有地方去(R1),再让意图可靠(R2),然后 PCE 才能安全地丢掉业务和重试(R3、R4);emulator 独立(R5);平台/仿真最后,因为它依赖前面全部的北向与视图(R6)。
 
