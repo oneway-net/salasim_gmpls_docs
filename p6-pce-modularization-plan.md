@@ -34,9 +34,18 @@ L4 app、mgmt
 - 把 WSON 的 `ReservationManager` / `DeleteReservationTask` 从 `server.wson` 移到 `computingEngine.wson`(它们不依赖任何 `es.tid.pce` 其它包;38 处 import 原来是 compute → server)。全部 WSON 代码保留。
 - 新增 F11,基线 83 → 57。PCE 全套 813 通过,适应度函数全绿。
 
-## 剩下的(按价值/风险排)
+## P6b(已完成,本地,2026-10-10):没有向上依赖了
 
-1. **等 P7 再做大头**:`computingEngine→parentPCE` 的 22 条几乎全是父 PCE 的有状态部分(向子 PCE 发请求、多域 LSP 账本、父会话)。D1 之后父 PCE 变成无状态 H-PCE 算路服务,不再持有 LSP、不再信令,这些依赖随之被删,而不是被"接口化"。先抽接口再删是白做。
-2. **域侧 20 条**(`computingEngine→server`):给算法一个窄接口(`ReportLedger`:查 LSP 状态;`PccSessions`:协作 PCE 会话;`PendingUpdates`;`PceParameters`),由 `server` 实现。这是 `pce-compute` 抽模块的前提,可以现在做,但 7 个接口各自要改十来处调用点,测试要跟着改。
-3. `parentPCE→plan`、`server→plan`、`→http`(共 11 条):`plan`/`http` 里被引用的类是纯数据/小服务,下沉到低层即可,成本低。
-4. 然后才是 Maven 多模块(compute 先,依赖最少)、LSP 表合一(`SD_LSP` + `ReportDB` + `LspRegistry` → `LspTable`)、单例 → `PceContext` 构造注入(F8 现在只剩 1 个静态状态)、删遗留服务器与入口。
+P7 S6 删掉父 PCE 的有状态部分后,原来列的 `computingEngine→parentPCE` 22 条随之消失;其余没有走"窄接口",而是**把类放回它该在的层**(成本低得多,也更诚实):
+
+- 域侧有状态处理(`ReportDispatcher`、`ReportProcessorThread`、`SingleDomainIniProcessorThread`、`UpdateProcessorThread`)从 `computingEngine` 移到 `server`(它们本来就是域 PCE 的账本处理,不是算路)。
+- `MplsOnlyMode`(util)→ `computingEngine`;`RouteCandidatePlanner`(plan)→ `computingEngine.algorithms.window`;`DiversityRequirements` → `lsp`;`RoutePlanningPolicy` → `model`;`eroHopStrings` → `lsp.EroHops`(`SegmentLinkReporter` 因此可以留在 compute)。
+- 两个 main(`PCEServer`、`ParentPCEServer`)移到 `net.salasim.pce.app`(pom 的 mainClass 同步);`DomainPCEServer` 不再 import HTTP 层,由 main 经注入的 `Exposure` 把 HTTP API / 管理面挂上去。
+- F11 只数本模块的类(拓扑 jar 与 PCE 共用若干 `es.tid.pce.*` 包名,那些类的分层归拓扑模块)。**F11 基线 57 → 0**,PCE 564 个测试通过。
+- 另删了无人引用的遗留类:`server` 的 `RequestQueue`/`Sender`/旧 `RequestProcessorThread`/`LayerTypes`/`PCEPServerUserInterface`,`management` 的 `Entity`/`PcepPeerInformation`,`computingEngine` 的 `SinkTimerTask`/`GraphEndPoints`/`SourceDest`/`graphs_comparator`。WSON 的一行没动。
+
+## 剩下的
+
+1. **Maven 多模块**(层次已经干净,可以拆):L0+L1(`model`/`recovery`/`lsp`/`util`/`ospf`/`management`/`computingEngine`)是 `pce-compute`,其余留在 `pce`。要动的是 PCE 仓库的 pom 结构(新父 pom、Dockerfile/shade/autojar 的构建路径、测试分到两个模块),**镜像构建在本机验证不了**——先在测试机上构建一次镜像再合并比较稳。
+2. **LSP 表合一**(`SD_LSP`/`SingleDomainLSPDB` + `ReportDB_Handler` + `LspRegistry`):三者存的东西不同(PCC 报告的域内 LSP 视图与委托、原始 PCRpt 状态、控制器意图的生命周期),合一是一次设计,不是搬类;调用点不多(约 130 行),但会改变域 PCE 的核心状态,没有测试机验证不建议做。
+3. 单例 → 构造注入:F8 只剩 `PceProcess` 那一个有意保留的持有点。
