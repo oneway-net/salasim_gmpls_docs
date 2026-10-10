@@ -178,9 +178,11 @@ M3、M4、M5、M6:相互独立,可穿插
 | **同一概念多处实现** | LSP 名在 4 处按 `/` 拆分(`LspNames`、`ServiceProvisioner`、控制器 `LspStateEvent`、`NetworkPushDecoder`);"一次信令操作"分散在 `PendingUpdateTracker`、`SignalingOperationTelemetry`、`TunnelUpdateEmitter` 的 open operations、`openRerouteAttempts` 四处 | 缺值对象和"操作"对象 |
 | **上帝类** | `DomainPCEServer` 1956 行(PCEP 服务 + 反应式恢复 worker + PCUpd 派发)、`ChildPCERequestManager` 1876、`ProtectionManager` 772(业务、两条腿、重试、计时器、持久化、等待者) | 多个职责挤在一个类里,`ProtectedService` 的字段被管理器直接读写 |
 
-### 10.2 关键判断:先优化"D1 之后还存在的对象"
+### 10.2 范围(用户 2026-10-10 确认)
 
-D1 已定:跨域由 MDSC 缝合,父 PCE 只算路。因此 `ParentMdLspReroute`、`ParentMdLspInitiateService`、`PathRebuild`、`MultiDomainLSPDB`、`ParentMplsBandwidthUpdater` 的父侧部分、`ChildPCERequestManager` 的 PCInitiate 路径**都会迁走或删除**——现在给它们做面向对象重构是白做。本轮只动三处会长期存在的地方:**域 PCE、控制器、两者共享的值对象**。
+- **父 PCE 也一起优化**(用户选择),尽管 D1 之后它的 LSP 持有会迁到 MDSC;
+- 共享值对象放进**新建的无依赖模块 `salasim-model`**;
+- **移除历史包袱,按最正确的方式设计**:不保留旧名字、旧格式、旧语义的兼容层。
 
 ### 10.3 目标对象(按所在组件)
 
@@ -236,3 +238,11 @@ salasim-model 值对象(LspName/LspRef/Path/DirectedLink)
 ```
 
 每一步都是行为不变的重构,以现有测试为安全网;值对象这一步同时改 PCE 和控制器,其余各自独立。
+
+- **§10 第 1 步:共享值对象与不透明的 LSP 名(2026-10-10)**:
+  - 新模块 `salasim_gmpls_model`(工件 `net.salasim:salasim-model`,无依赖):`LspName`(按 `salasim-pce-lsp` 的 `lsp-name` 类型校验)。**沙箱不允许在新目录 `git init`,该目录还不是 git 仓库,需要用户执行一次 `git init`**;fitness 的 F1/F4 已把它列入(model 不依赖任何人;pce、controller 可依赖它)。
+  - PCE:**名字不透明**——`ServiceRegistry`/`ServiceProvisioner`/`ServiceIntent`/`TunnelIntent`/`ServiceRequest`/`LspNames` 删除,换成 `net.salasim.pce.lsp` 下按 `LspName` 键控的 `LspIntent`、`LspState`、`LspLifecycle`、`LspFailure`、`LspRegistry`、`LspProvisioner`;一个 LSP 一个条目,"同一组内才能分离"的限制去掉(分离参考可以是本 PCE 知道的任意 LSP);失败类型按契约改为 `lsp-request-invalid`、`lsp-request-conflict`、`lsp-operation-in-progress`、`diversity-reference-not-ready`。**PCEP 线名就是 LSP 名**,`service/<s>/tunnel/<t>` 格式消失;遥测身份、事实记录(`lspName` 代替 `serviceId`+`tunnelId`)、开放操作索引、路径实例 id 都按 LSP 名;发射器 `emit` 恒为 null 的第二参数删除。
+  - YANG:`salasim-fact` 的 `lsp-update` 去掉与 `lsp-name` 重复的 `symbolic-path-name`;`salasim-service-types` 的失败类型说明更新。
+  - 控制器:自己的 `<service>/<tunnel>` 约定集中在 `TunnelName`(组成与解析都只在这里);`LspStateEvent.tunnel()` 对不是控制器组成的名字返回空。
+  - 参考场景:线名与事实断言改为 LSP 名(**未运行**)。
+  - 测试:model 3、PCE 813(`ServiceProvisionerTest` 28 项换成 `LspProvisionerTest` 18 项,覆盖同样的规则)、controller 213、netconf 60,全部通过;fitness 全部在基线。

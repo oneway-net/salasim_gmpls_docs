@@ -186,7 +186,7 @@ step "12. the primary link fails: the controller moves the service to the standb
 "$HERE/fault.sh" down && ok "carrier down on the primary's link" || bad "fault injection failed"
 until_ 60 "the MDSC was told that the primary of svc-3 is down" heard svc-3 primary down
 until_ 30 "the service is carried by the standby" carried standby || diag mdsc pce-d2
-until_ 30 "the MDSC's stream carried the standby's LSP facts (domain PCE -> PNC -> MDSC -> client)" stream_has "$FACTS" '"symbolic-path-name":"service/svc-3/tunnel/standby"'
+until_ 30 "the MDSC's stream carried the standby's LSP facts (domain PCE -> PNC -> MDSC -> client)" stream_has "$FACTS" '"lsp-name":"svc-3/standby"'
 until_ 30 "the MDSC's stream carried the controller's protection-selection fact for svc-3" stream_has "$FACTS" '"protection-selection":{[^}]*"service-id":"svc-3"'
 until_ 30 "query-services: svc-3 is carried by the standby and still up" bash -c "$(declare -f restconf queried); EXP='$EXP'; RESTCONF='$RESTCONF'; queried svc-3 selected-tunnel standby && queried svc-3 oper-status up"
 

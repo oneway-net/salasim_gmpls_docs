@@ -30,7 +30,7 @@ BASELINE = HERE / "baseline.json"
 WORKSPACE = Path(os.environ.get("WORKSPACE", HERE.parents[2]))
 
 # control core and device repositories: no simulation concepts (F4), injected clock (F7), no static state (F8)
-CORE_JAVA = ["salasim_gmpls_pce", "salasim_gmpls_emulator", "salasim_gmpls_topology", "salasim_gmpls_protocols",
+CORE_JAVA = ["salasim_gmpls_model", "salasim_gmpls_pce", "salasim_gmpls_emulator", "salasim_gmpls_topology", "salasim_gmpls_protocols",
              "salasim_gmpls_netconf", "salasim_gmpls_controller"]
 YANG_REPO = "salasim_gmpls_yang"
 BACKEND_PKG_ROOT = "salasim_gmpls_backend/src"
@@ -178,18 +178,19 @@ def check_f5() -> list[Violation]:
 
 # ---------------------------------------------------------------- F1 artifact dependency direction
 
-ARTIFACT_REPO = {"salasim-yang": "yang", "network-protocols": "protocols", "topology": "topology", "pce": "pce",
+ARTIFACT_REPO = {"salasim-model": "model", "salasim-yang": "yang", "network-protocols": "protocols", "topology": "topology", "pce": "pce",
                  "salasim-netconf-mgmt": "netconf", "network-emulator": "emulator", "salasim-controller": "controller"}
 # allowed internal dependencies (system-architecture v2 section 3.1: libraries yang <- protocols <- topology <- pce;
 # devices use protocols/topology/netconf/yang; controller uses netconf/yang; nothing depends on a service)
 F1_ALLOWED = {
+    "model": set(),
     "yang": set(),
     "protocols": {"yang"},
     "netconf": {"yang"},
     "topology": {"yang", "protocols"},
-    "pce": {"yang", "protocols", "topology", "netconf"},
+    "pce": {"model", "yang", "protocols", "topology", "netconf"},
     "emulator": {"yang", "protocols", "topology", "netconf"},
-    "controller": {"yang", "netconf"},
+    "controller": {"model", "yang", "netconf"},
 }
 
 
