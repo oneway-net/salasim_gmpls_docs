@@ -73,3 +73,11 @@ PCE(域与父,同一套)在原有 `salasim-pce-lsp` RPC 之外同时服务 `ietf
 - **删除**:控制器里的 `PncServiceRpcs`、`LspStateXml`、`LspStateEvent`;PNC 的 MPI 不再带 `salasim-pce-lsp`/`salasim-service-types`,改带 `ietf-te` + `salasim-te-ext`(并把路径与 teardown 的生命周期声明为可推送)。PCE 也开了 YANG-push。PCE 上的 `salasim-pce-lsp` RPC 与 `lsp-state-changed` 通知仍在,等 P5c-3 删。
 - **ietf-te 的限制发现**:secondary-path 没有 `k-requested-paths`(只有 primary-path 有),所以备用路径的候选数取它的主路径的。
 - **验证**:控制器全套 256(37 个需要数据库/端口的跳过);`PncTunnelRelayTest` 把 MDSC 端口 → PNC → 复制器 → (模拟的)PCE → 状态回读整条链在真实数据库上跑通(开通、备用、PCE 离线后补写、删备用与删业务、removals 跟踪);`TunnelTreesTest` 在真实 ietf-te schema 上校验控制器写出的 tunnel;PCE 全套通过。**没有在本机验证的**:ODL NETCONF 客户端经挂载点对 PNC/PCE 的真实配置写入与读取(candidate + commit)、两层 YANG-push 订阅的端到端——要在测试机 10.112.61.137 的参考场景(开通→断链→重路由→恢复)里验证。
+
+## P5c-3 结果(2026-10-10,本地)
+
+- 删除 `salasim-pce-lsp` 模块,PCE 的 `LspRpcs`(add/update/remove/compute-paths/query-lsps RPC 及其测试)、`lsp-state-changed` 通知、`RpcTrees`、`PceManagementModel` 里的 LSP 常量;PCE 的 NETCONF 只剩 `salasim-link-state`(P4b-3 再删)与 `ietf-te`。`update-lsp`/`compute-paths` 本来就只是"不支持"的占位,没有实现要保留。
+- netconf 库的 `RpcInputValidatorTest` 以前拿 `salasim-pce-lsp` 当"真实契约",现在换成测试资源里自带的 `salasim-rpc-fixture`(同样形状:必填叶、必选 choice、最少条目、必需容器、带必填叶的 presence 容器)。
+- 参考场景 `check.sh` 的 `heard()` 以前 grep `lsp state: ... is ...`(通知),现在 grep MDSC 新增的日志 `tunnel state: <service>/<leg> is <state>`(`ProtectionManager` 读回状态且状态变了时记)。**参考场景脚本本身没有在机器上跑过**。
+- 测试:控制器 244(37 个需要数据库/端口跳过),PCE 813,netconf 全绿。数字比 P5c-2 报告少 12,是因为那一次没有 `clean`,target 里还留着已删除测试的旧 class。
+- 还留着 `salasim_gmpls_model` 不在任何 git 仓库里(`LspName` 注释的改动只在工作区)。

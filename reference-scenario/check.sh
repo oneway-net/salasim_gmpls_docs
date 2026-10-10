@@ -104,8 +104,8 @@ want_path() { # key [root port symbol]: the ERO holds the expected router ids in
   echo "     ero: ${got:-<none>}   expected: $expected"; [[ "$got" == *"$expected"* ]]
 }
 
-heard() { # service tunnel state: the MDSC logged that notification (lsp-state-changed, RFC 5277; the LSP is <service>/<tunnel>)
-  "${COMPOSE[@]}" logs mdsc 2>&1 | grep -aq "lsp state: .* $1/$2 is $3"
+heard() { # service tunnel state: the MDSC read that state of the tunnel back from the PNC / PCE (YANG-push hint, then a read of the ietf-te state)
+  "${COMPOSE[@]}" logs mdsc 2>&1 | grep -aq "tunnel state: $1/$2 is $3"
 }
 until_ 60 "the MDSC was told by the parent PCE that svc-1 is active" heard svc-1 primary active
 
