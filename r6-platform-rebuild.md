@@ -40,6 +40,17 @@ src/salasim_core_history/   不变(E1 之后只订阅 MDSC)
 
 每个切片单独提交;S1–S5 期间旧包原样留着(不再修),S6 一次删除。
 
+### S3 已做(2026-10-10)
+
+用户决定:先 Kubernetes,控制核心先行;测试床描述直接用 YANG(每域一个 `ietf-network` + `ietf-te-topology` 网络,即 PNC 的原生拓扑文档)。
+
+- `salasim.testbed.spec`:解析描述(约定见模块文档),错误以 `SpecError` 指出第一处问题。
+- `salasim.testbed.artifacts`:各进程读的文件(域 PCE 的 topology.json/xml、PCC 白名单、PNC 原生拓扑与清单、MDSC 清单、接口清单、核心库首启脚本),与参考场景渲染结果逐字段一致。
+- `salasim.testbed.manifests`:每个测试床一个命名空间 `tb-<id>`:core-db(StatefulSet)、`core` Pod(MDSC + 父 PCE,emptyDir 共享 composed-topology)、每域 pce/pnc、history;口令只在 Secret 里,重新部署沿用。父 PCE 配置最多 3 个子域。
+- `salasim.k8s`:kubectl(服务端 apply,执行器可替换);只动带 `salasim.net/testbed` 标签且属本测试床的命名空间。
+- 任务 `testbed.deploy` / `testbed.clean`;路由 `/api/v2/testbeds`(PUT 描述、POST deploy/clean、DELETE 仅空闲时)。
+- 未验证:history 订阅的 MDSC 流地址 `/restconf/streams/json/network-facts`;`salasim/platform` 镜像尚不存在(S6 出 Dockerfile);设备(`node-<router-id>` Service)由 S4 提供。
+
 ## 3. 不迁移的东西(随 S6 删除)
 
 SQLite 存储(`runtime_store`、`operations`、`service_store`、`tunnel_store`、`simulation_run_store`、`pce_state_schema`、`configuration_profile_store`);对 PCE/emulator/controller run RPC 的直接调用(`agent_clients`、`pce_run_input`、`node_clock_control`、`fault_*_delivery`、`controller_client` 的 run 部分);`topology_clock_service`;`telemetry_consumer`(NATS);`v3_statistics`(统计改由 S6 的 `results` 从 `core_api_v1` 算);`/internal/pce/*`;`slice_*`、`simulation_*`、`availability_*`(窗口与可用性在 `results` 里按新模型重写)。
