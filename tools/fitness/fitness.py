@@ -230,7 +230,10 @@ def check_f2() -> list[Violation]:
 # ---------------------------------------------------------------- F3 Python package boundaries
 
 # importer -> packages it must not import (system-architecture v2 section 4: three top-level packages)
-F3_FORBIDDEN = {"salasim_core_history": ["salasim", "salasim_sim"], "salasim": ["salasim_sim"]}
+F3_FORBIDDEN = {"salasim_core_history": ["salasim", "salasim_sim", "salasim_backend"],
+                "salasim": ["salasim_sim", "salasim_backend"],
+                "salasim_sim": ["salasim_backend"],
+                "salasim_pg": ["salasim", "salasim_sim", "salasim_core_history", "salasim_backend"]}
 
 
 def check_f3() -> list[Violation]:
