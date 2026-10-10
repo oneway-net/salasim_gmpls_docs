@@ -268,3 +268,7 @@ gNMI 订阅路径用 IETF YANG:`ietf-interfaces` `/interfaces/interface/statisti
 - P0:W1 修复(PCE 在建中删除、DOWN 复活、延后重排、失败词汇;controller ReportQueue;core history 补填 LSP 端点与事务起点)。
 - P0.5(已做):平台任务心跳续租与租约丢失即停、测试床生命周期互斥、状态比较并设置、PUT 不覆盖状态、profile 唯一与必填修订号;emulator 按 PLSP-ID/名字解析 LSP 删除、同名 PCInitiate 不建第二条、做完再断不复活已删 LSP、成功判断只认本节点 LSP;MDSC `OwnerLease`(每网络一个所有者)、先持久后行动、读取按序、报告入队顺序、JDBC 超时;PCE 报告单线程有序、超时 PCUpd 在全量同步/删除确认时清理;链路平面流首发快照、修订号不回退。
 - P0.5(未做,依赖后续阶段):MDSC→PNC/PCE 的 fencing epoch(需要 YANG 叶子,P2);组合拓扑文件在父 PCE 重连时重写(随 P4/P7 改为订阅而消失);PCE 每 LSP 串行执行者(P6)。
+
+- P2(进行中,2026-10-10):
+  - 已做:`ietf-te@2024-02-02`、`ietf-te-types@2026-06-11`、`ietf-te-packet-types@2026-06-11`(草案修订)与 `ietf-alarms@2022-06-06` 入库,RFC 的 `ietf-te-types@2020-06-10` 移除(一个模块只能有一个修订);各组件的文件名与 Java 绑定包(`rev260611`)已跟进;5 个仿真模块移到 `salasim-sim/`,作为同一制品的 `sim` 分类器 jar,核心 jar 不再含仿真模块;`sat-topology` 前缀冲突修复;netconf 库增加 `AllModulesLoadTest`(整套模块在生产解析器里一起加载);`ietf-te` 适配分析见 `ietf-te-fit-2026-10-10.md`。
+  - 推迟到 P5(与模块集合一起一次完成,避免两次改包名):`salasim-te-ext`、`salasim-types` 合并 typedef、全部 salasim 模块收敛为单一新修订、Java 常量与 Python 类型由 YANG 生成、README 与 module-classes 由脚本生成;fencing epoch 叶子随 te-ext。
