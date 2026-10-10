@@ -314,3 +314,23 @@ S6 要删除父 PCE 的有状态部分,而受保护的跨域业务(主备)当时
 - **没做 / 要知道**:域内段本身并不"强制"分离(域 PCE 的 ietf-te 只支持同一隧道内主备路径的分离,备用腿的段是另一条隧道),只是事后检测并报告 `degraded`;`srlg` 目前按 node 近似(组合拓扑的 compute 接口没有 SRLG 信息);备用腿和主用腿的带宽都占(没有共享保护);没在真实环境验证。
 
 验证:`CrossDomainTunnelPortTest` 52 个(新增 8:备用腿避开主用腿的链路并同时读两条腿、搜不到分离就降级、域内相遇判降级、节点策略与 none、节点分离排除边界节点、主用恢复避开备用、备用先于主用请求与未知隧道、删备用留主用),`FakePces` 能提供计算路径;控制器 303 通过(42 跳过),适应度全绿。
+
+
+## 16. P7 S6:删除父 PCE 的有状态部分与域 PCE 对父 PCE 的会话(2026-10-10,本地)
+
+前提是 §15(受保护的跨域业务也由 MDSC 铺)——否则这一步会让主备业务没有路径。
+
+**父 PCE 现在只剩**(`ParentPCEServer.main`,NETCONF + 只读 HTTP 代理):组合拓扑(`ComposedTopology`,由 MDSC 写的实例数据文件读入,`report-topology-change` 更新链路状态与时延)、`compute-cross-domain-paths`、`planned-link-changes`(接口计划)。不监听 PCEP、不问任何域 PCE、不持 LSP、不预留带宽、不信令、无 telnet 管理口、无 TED 发布——链路没了,没有东西要恢复:拥有路由的 MDSC 重新问。
+
+**删除的**(父侧):`ParentMdLspInitiateService`/`ParentMdLspReroute`、`InterDomainLsp{Initiate,Update}Helper`、`InterDomainSnapshotLspRerouteHelper`、`ChildPCERequestManager`、`ParentPCESession`(PCEP 监听)、父 LSP-DB(`MultiDomainLSPDB`/`MD_LSP`)、`ParentMplsAdmissionCoordinator`/`ParentMplsBandwidthUpdater`、`ParentRouteSearch`/`PathRebuild`/`RerouteDispatcher` 等恢复机器、父算法(`MDHPCE*`、`Child*`、`ECMPMinTotalHops…`、`LocalChildRequestManager`)、`ParentRecoveryDriver`、`ParentPCEServerParameters`、父管理口、`ParentLspMachinery`(父 PCE 上不再有 ietf-te 隧道配置)、以及它们的约 260 个测试。**域侧**:`ChildPCESession(+Manager)`、`ParentPCERequestManager`、`SendTopologyTask`/`SendReachabilityTask`/`ITSendTopology*`、`RequestProcessor`,`RequestProcessorThread` 里把 PCC 请求转给父 PCE 的分支(及参数 `cpcerm`)、`DomainPCEServer` 里向父 PCE 报告断路的升级路径(`notifyParentReactiveBrokenLsp`)与对应调度。域内重路由失败的段保持 down/failed,由 MDSC 处理。
+
+**搬出父包的共用类**(域 PCE 也用):`TunnelUpdateEmitter`、`SignalingOperationTelemetry`、`TunnelTelemetryRegistry`、`LspFactSink`、`ProtectionDiversity`、`PathTelemetryResolver`、`SegmentLinkRegistry` → `net.salasim.pce.lsp`;新增 `EroHops`(原 `PendingUpdateTracker.eroHopStrings`)、`RequestIds`(SRP-ID 计数器,按 `PceContext` 持有)。
+
+**保留**:全部 WSON 代码(用户 2026-10-06 的裁定)、BGP-LS 的 `MultiDomainTopologyUpdater*`(现在无人调用,只是没删)、域 PCE 的 PCReq 处理。
+
+**结果**:PCE 测试 831 → 564(删去的都是被删代码的测试),全绿;适应度全绿,F11(PCE 分层)基线 57 → 24。
+
+**没做 / 要知道**:
+- 部署侧还留着父 PCE 的旧东西:`docker/entrypoints/pce.sh`、渲染模板、`kustomization` 里的子 PCE 服务名、域 PCE 配置里的 `parentPCEAddress` 仍被渲染(域 PCE 读到后不再使用)、profile 里 `domainPce.timeouts.parentPceRequestMs/parentRequestBudgetRatio` 两个旋钮已无人读;旧 backend 的父 PCE 就绪检查(`_wait_parent_reachability`、父 PCE 队列读数)会读不到数据——旧 backend 随 R6 一并删。
+- 父 PCE 的只读 HTTP 接口里,拓扑/LSP/预留读数现在是空的(`describeTopology` 等读的是已不存在的 TED)。
+- 参考场景的 `check.sh`、真实环境都没跑过 S2–S6;S6 之后集群里父 PCE 与域 PCE 只通过 MDSC 联系。
