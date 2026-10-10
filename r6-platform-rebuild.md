@@ -61,6 +61,14 @@ src/salasim_core_history/   不变(E1 之后只订阅 MDSC)
 - 顺带:S6 之后的部署跟随——父 PCE 不再要配置文件与 PCEP 端口、不再限三个域,域 PCE 没有父会话的占位(`salasim.testbed.manifests`、PCE 的 `pce.sh`)。
 - 验证:`tests/sim` 85 个、`tests/plat` 50 个、`tests/pg` 41 个(含 `ScenarioStore` 与基线)全过。**未验证**:fleet 在真实集群里起得来(`salasim/platform` 镜像还没有——S6 出 Dockerfile;emulator 对 `INTERFACE_INVENTORY_FILE`/`MEDIUM_BASE_URL` 的读取只在参考场景里跑过)、大星座(1000+ 颗)的编译耗时。
 
+### S5 已做(2026-10-10)
+
+- **回放**(`salasim_sim.replay`):`Step`(某个仿真时刻要做的一件事:改端口、提交服务、删除服务)+ `play`:按仿真序、各在到期的墙钟时刻执行(一个会话**一个** speed-up,无暂停);每步记录计划时刻、实际时刻、结果与答复(`sim.environment_action`),迟到的立即做并记录迟到毫秒;一步抛错记为 failed、会话继续(一个被拒的提交是核心的事实,不是运行的终点);长等待按 1 s 分片以便及时发现 stop;时钟可注入(测试用手动时钟)。
+- **计划**(`salasim_sim.session.build_steps`):时间线的每个端口变化(第一次说某端口的是 `link_carrier`,之后载波不变只变时延的是 `link_attr`)+ 负载的每次提交与删除。
+- **客户端**(`salasim_sim.client`):`MediumClient`(`PUT /nodes/<router-id>/ports/<port>`)、`MdscClient`(RESTCONF `ietf-te` 隧道,体的形状与参考场景一致;2xx 只表示 MDSC 收下,能不能承载是隧道自己的状态)。
+- **会话**:`POST /api/v2/testbeds/{id}/sessions`(核心与 fleet 已部署、场景存在、speedup > 0;测试床同一时刻一个会话,`supersede` 可顶替)、`GET /api/v2/sessions[/{id}]`、`POST .../stop`(已结束的 409)、`GET .../actions`;任务 `sim.session.run` 编译场景、起会话时钟(`running`)、批量记录计划(`ActionStore.plan_many`)、回放、`finalizing` → `completed`;被 stop 则以 API 写的 `stopped` 为终点(没做完的留作 planned);回放器自己出错则 `failed`。会话任务与部署/清理共用测试床作用域,所以会话期间不会被部署或清理打断。
+- 验证:`tests/sim` 101 个(回放的到期时刻/迟到/失败继续/分片/停止、计划的形状、会话的完成/停止/失败/重复启动、API、运行任务对链路平面与 MDSC 的调用、MDSC 请求体),`tests/pg` 42 个(含 `plan_many` 的顺序与 jsonb 数组)。**没做**:`install_contact_plan`(父 PCE 目前只有 Java 接口 `installPlan`,没有写入它的 RPC/数据存储,所以接触计划只被编译、没有被安装);fleet 与会话在真实集群里的联调(未验证)。
+
 ## 3. 不迁移的东西(随 S6 删除)
 
 SQLite 存储(`runtime_store`、`operations`、`service_store`、`tunnel_store`、`simulation_run_store`、`pce_state_schema`、`configuration_profile_store`);对 PCE/emulator/controller run RPC 的直接调用(`agent_clients`、`pce_run_input`、`node_clock_control`、`fault_*_delivery`、`controller_client` 的 run 部分);`topology_clock_service`;`telemetry_consumer`(NATS);`v3_statistics`(统计改由 S6 的 `results` 从 `core_api_v1` 算);`/internal/pce/*`;`slice_*`、`simulation_*`、`availability_*`(窗口与可用性在 `results` 里按新模型重写)。
