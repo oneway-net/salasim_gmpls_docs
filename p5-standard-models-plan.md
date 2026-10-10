@@ -64,10 +64,12 @@ PCE(域与父,同一套)在原有 `salasim-pce-lsp` RPC 之外同时服务 `ietf
 - 没做:YANG-push 订阅(P5c-2 与订阅端一起做);标准的 `computed-path-properties` 路由(ero 是简化的 leaf-list);`te/lsps` 列表。
 - 验证:`TunnelReconcilerTest`(4 个:开通与状态、备用路径分集、删除与 removals、非法配置),真实 NETCONF 服务器与 schema、记录机器调用的控制口;PCE 全套 825 通过。
 
-## P5c-2 要决定的(PNC 的角色)
+## P5c-2 结果(2026-10-10,controller + pce,本地;用户选了 PNC 复制器方案)
 
-现在 MDSC → PNC(`add-lsp` 等 RPC 原样转给域 PCE)→ 域 PCE。配置库模型下 PNC 不能"转发 RPC",要有一份自己的 `ietf-te` 配置库并与 PCE 同步:
-
-- **A. PNC 复制器(推荐)**:MDSC 往 PNC 的 MPI 服务器写 `ietf-te` 配置;PNC 监听提交,把每个变化的 tunnel 原样写到域 PCE(edit-config,经 ODL 挂载点);PCE 的运行库状态经 YANG-push on-change 订阅回来写进 PNC 的运行库。tunnel 名与路径名两侧相同,所以是子树复制,不翻译。
-- **B. MDSC 直接写域 PCE**:违背 ACTN 分层(MDSC 不应认识域 PCE),不选。
-- 父 PCE 同样由 MDSC 直接写(现在就是 MDSC 直连父 PCE),但 P7 里它变成无状态算路服务,届时 LSP 配置面删除。
+- **MDSC → PNC / 父 PCE**:`LspTunnelPort` 改为经挂载点的数据库往设备的配置库写 `ietf-te`(`TunnelDatastore`/`MountTunnelDatastore`):开通 = 合并一条 tunnel(名 = 业务号,一条路径 `primary` 或 `standby`;`standby` 是 secondary-path);删除备用 = 删这条路径,删主用 = 删整个 tunnel;状态从运行库读(路径条目;已不在 tunnel 里的看 `removals`)。"写成功(提交被接受)"就是"已受理";PCE 之后的态度(没有路径、备用无法分集、冲突)是路径状态里的 `failed` + `failure`,**不再在受理时返回**。因此一条主路径无法建立的业务不再被当场拒绝,而是 failed 并按重试策略再试。
+- **再问一次 = 再写一次**:每次 `provision` 都带一个新的 `description`("ask N"),所以 PCE 会重试 failed 的路径、重算 down 的路径。
+- **PNC 复制器**(`PncTunnelRelay`):监听 MPI 配置库的提交,把变了的 tunnel 整条 put 到域 PCE(消失的 tunnel 删掉);PCE 不在线就按 2 秒重试,每次 PCE 挂载(重连)时全部重写一遍;PCE 的路径状态与 `removals` 经 YANG-push(`PushSubscriber`)的提示读回并写进 PNC 的运行库。PNC 不做任何决定、不翻译名字。**没有做**:PCE 里 PNC 配置库没有的 tunnel 不会被清理(PNC 重启后靠 MDSC 重放对齐)。
+- **MDSC 跟踪状态**:`TunnelStateHints` 用 `PushSubscriber` 订阅各 PNC 与父 PCE 的路径/teardown 生命周期,提示 = "哪个业务变了"→ `ProtectionManager.onTunnelState`(管理器仍然读回状态,所以丢一次推送只是延迟);`push-update`(同步起点)= 全部重读。`FactSubscriber` 保留事实(network-fact)转发,不再处理 `lsp-state-changed`。
+- **删除**:控制器里的 `PncServiceRpcs`、`LspStateXml`、`LspStateEvent`;PNC 的 MPI 不再带 `salasim-pce-lsp`/`salasim-service-types`,改带 `ietf-te` + `salasim-te-ext`(并把路径与 teardown 的生命周期声明为可推送)。PCE 也开了 YANG-push。PCE 上的 `salasim-pce-lsp` RPC 与 `lsp-state-changed` 通知仍在,等 P5c-3 删。
+- **ietf-te 的限制发现**:secondary-path 没有 `k-requested-paths`(只有 primary-path 有),所以备用路径的候选数取它的主路径的。
+- **验证**:控制器全套 256(37 个需要数据库/端口的跳过);`PncTunnelRelayTest` 把 MDSC 端口 → PNC → 复制器 → (模拟的)PCE → 状态回读整条链在真实数据库上跑通(开通、备用、PCE 离线后补写、删备用与删业务、removals 跟踪);`TunnelTreesTest` 在真实 ietf-te schema 上校验控制器写出的 tunnel;PCE 全套通过。**没有在本机验证的**:ODL NETCONF 客户端经挂载点对 PNC/PCE 的真实配置写入与读取(candidate + commit)、两层 YANG-push 订阅的端到端——要在测试机 10.112.61.137 的参考场景(开通→断链→重路由→恢复)里验证。
