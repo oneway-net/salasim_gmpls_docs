@@ -278,3 +278,8 @@ gNMI 订阅路径用 IETF YANG:`ietf-interfaces` `/interfaces/interface/statisti
   - 已做 P4b-1:PNC 的 MPI 提供本域 native 网络 `salasim:<domain>/native` 及实时 oper-status(`NativeNetworkService`),变化经现有 YANG-push 发布;MDSC 忽略 native 网络。
   - 核对后不做:域 PCE 的 TED 增量化(整图复制 + 原子快照替换,读者无锁,规模下代价可忽略);父 PCE 的 JSON 重载(随 P7 重做);"PCRpt DOWN 自足"(PCRpt 不带失败的是哪一跳)。
   - 未做(用户决定暂停):P4b-2 域 PCE 订阅 PNC 的 native 网络(需要 netconf 库里的 NETCONF 客户端,选定用 ODL `netconf-client`;实现时两次被安全分类器拦下,未提交任何代码),P4b-3 删除 `report-link-state` 推送链(`PncLinkState` 到 PCE 的 ReportQueue、`ActualLinkStateReporter` 的 generation、PCE 的 `report-link-state` RPC),以及测试床清单里 PCE→PNC 的地址与凭据。现有 PNC→PCE 推送链保持原样工作。
+
+- P3(2026-10-10,本地提交,未在真实集群上端到端验证):
+  - 已做:MDSC 的库缩成 `intent` + `intent.outbox`(Debezium outbox 列,publication `salasim_outbox` 只发 insert)+ 只读视图;七个历史 schema、分区机制、历史角色与 `salasim_core_history` 删除。MDSC 的事件(业务生命周期、保护选择、告警)在改变状态的同一事务里写入 outbox(保存失败则状态与事件都不留;选择事件带同事务保存的保护状态版本);PCE 上报的事实经 `OutboxRelay`(有界队列、独立线程、重试、修剪)写入同一 outbox;RESTCONF 通知流(`FactPublisher`)删除。事件 JSON 用 salasim-fact 模块解析校验。测试库的数据库 Pod 开 logical WAL(slot 保留日志有上限),并有只能读 outbox 的复制登录。平台:`db/clickhouse` 基线(四个事件主题的 Kafka 引擎表、类型化 ReplacingMergeTree 表与物化视图、30 天原始载荷),`pipeline.ensure` 任务部署 Redpanda / Kafka Connect(Debezium)/ ClickHouse 并应用基线;`testbed.deploy` 注册每测试床的连接器并等它运行,`testbed.clean` 在拆库前等日志送达(有界,未送达如实报告)再注销连接器。
+  - 本机验证:Postgres(DDL、smoke、40 个突变用例、Java 对真实库的 store/alarm/relay 测试);ClickHouse DDL 只能靠一致性测试(每个视图读的 JSON 路径都是 salasim-fact 的名字);Redpanda、Debezium、ClickHouse 本身要在测试机上验证。
+  - 推迟:库改名 mdsc-db;PCE 事实的 MDSC 自有 `tunnel-state`(E1)与 PCE 事实瘦身(E2);平台 `results.*` 与 ClickHouse 上的分析(P8/S6);`history.lsp_*` 之外的 link-oper-change 等无来源事件。

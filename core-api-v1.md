@@ -1,3 +1,11 @@
+# `core_api_v1`:MDSC 数据库对外的只读视图
+
+> **2026-10-10 重写(docs/system-design-v4.md P3)**:历史不在核心库里了。MDSC 的库(`db/core`,K8s 里叫 `core-db`,即"MDSC 自己的运行数据库")只有 `intent`(当前状态)、`intent.outbox`(事件,经 WAL 由 Debezium 读走)和这组视图。事件的历史与分析在平台的 ClickHouse(`db/clickhouse`)。下文 §1–§2 的约定仍然适用于这些视图;§3 起关于事件、区间、`*_interval`、`seq`、`received_at` 的内容**已作废**(保留作历史参考,对应的表与视图已删除)。
+>
+> 现在的视图(`salasim_gmpls_backend/db/core/schema/90_api.sql`):`network`、`service`(含最新状态)、`tunnel`(含最新读数)、`protection`、`alarm`(现行告警)。角色 `core_reader` 只能读它们。
+>
+> 命名:库、目录、角色里的 `core` 指"MDSC 的库";原计划改名为 mdsc-db,推迟(名字散在 Java 测试、清单、脚本里,改一半比不改更乱)。
+
 # `core_api_v1`:管控核心对外的只读历史视图(2026-10-09,R0 定稿第一版)
 
 > 权威:`control-system-architecture.md` v2 §2.6、D11;`system-architecture.md` v2 §2.3 接口表。
