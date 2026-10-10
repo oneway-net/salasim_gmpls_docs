@@ -220,3 +220,20 @@ S1 已实现(PCE 827 个测试、控制器 241 个、适应度函数全绿):
 **还没有**:MDSC 侧的使用(S2:`CrossDomainOrchestrator`:先问两个 PNC、再问父 PCE、逐段经 PNC 建 tunnel、失败回滚与换候选)。现有的跨域开通路径(`ParentMdLspInitiateService` 经 PCInitiate)原样保留,没有改。**没有验证**:参考场景(n1→n5 应得到 n1 n2 n3 n4 n5)——`compute-cross-domain-paths` 与现有 `initiate` 选的路径是否一致,要在场景里比;本机只有单元测试。
 
 剩余阶段不变:S2 开通/删除、S3 域间带宽记账、S4 响应式恢复(先列出 `ParentMdLspReroute` 的顺序/并发约束)、S5 预计算出计划、S6 删除父 PCE 的有状态部分。每一步都比 S1 大一个数量级,且依赖参考场景在测试机上跑通,建议逐步确认。
+
+
+## 11. P7 S2 的结果(2026-10-10,本地)
+
+MDSC 自己把**不受保护的跨域业务**铺过各域(参考场景的 svc-1,n1→n5):
+
+1. 业务的两端不在同一域且无保护 → `CrossDomainTunnelPort`(`RoutedTunnelPort` 按 `handles(spec)` 在它和原来的 `LspTunnelPort` 之间选)。
+2. 向源域 PNC 问 `segment-costs`(源 → 本域各边界节点),向宿域 PNC 问(各边界节点 → 宿),并行。
+3. 向父 PCE 问 `compute-cross-domain-paths`(k = 1,带上两侧代价和已排除的链路/节点),拿到按域切分的段。
+4. 路由先持久化(`intent.cross_domain_route`:状态、第几次尝试、排除项、各段的 PNC/隧道名/入口/出口),再往每个段的 PNC 写一条 `ietf-te` tunnel,名 `<业务>.seg.<域>`,源 = 该域入口、宿 = 该域出口,PNC 的复制器交给域 PCE。入口 = 出口的段(端点本身是边界节点)不建。
+5. 经理看到的是一条隧道:所有段 active = `active`,有段 down = `down`,其余 `establishing`;段的状态变化经 YANG-push 提示触发经理读回,**读回本身驱动后续处理**。
+6. **crankback**:读到有段 `failed` → 所有段拆掉,路由带着排除项(失败的过境段 = 它的抽象链路 id,端点段 = 它进/出的边界节点)重搜,最多 3 次;之后隧道 `failed`,失败类型取最后一段的原因(无候选 = `cross-domain-no-path`)。拆除时先写下 `removing`,所有段(含 removals 里的拆除)都消失才忘掉路由;PNC 丢了某段 → 读回时补写;PNC 全丢 → 经理再问一次,按存下的路由重写,不重搜。重启后从数据库读回路由,可继续读状态与删除。
+7. 规划阶段联系不上 PNC/父 PCE 或组合拓扑未就绪 → 受理时拒绝、可安全重试、什么都没写;写段时失败 → 已写的拆掉,路由不留。
+
+**不在范围**:受保护的跨域业务(仍走父 PCE 的 LSP,"两组段"的设计在 S4 之后);跨域 LSP 的响应式恢复(S4:现在一个段内部的故障由该域 PCE 自己重路由,跨域的失败只触发上面的 crankback,而一个已 active 的路由因域间链路 down 而丢失,没有处理——这是 S4);域间带宽记账(S3:现在各域只记自己段的带宽)。
+
+**验证**:`CrossDomainTunnelPortTest`(17 个:询问与写段、状态聚合、端点段省略、过境段链路、各种拒绝、无路由、crankback 的两种排除、最后一次尝试、删除、重启、补写丢失的段、PNC 全丢、提示)、`PathComputeTreesTest`(在真实 schema 上序列化与解析)、`JdbcCrossDomainRoutesTest`(Postgres),数据库冒烟与 45 个变异用例;控制器 265 个(40 个需要数据库/端口而跳过)。参考场景 `check.sh` 的跨域步骤已改成读两个段 LSP 的 ERO,**未在机器上跑**;`compute-cross-domain-paths` 选出的路径是否与原来父 PCE 选的一致、段拼接对状态上报有没有影响(§7 的第 3 条风险)要在场景里看。

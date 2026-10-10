@@ -119,6 +119,14 @@ for it in items:
         print(' '.join(dict.fromkeys(ip.findall(json.dumps(it.get('ero',it.get('path',it)))))))
         break
 " "${2:-$SYMBOL}"; }
+# svc-1 crosses domains and is not protected: the MDSC lays it itself, one segment tunnel per domain at the PNCs
+# (<service>.seg.<domain>), so the path is the two segments' EROs one after the other, each read at its domain PCE
+SEG1="svc-1.seg.d1/primary"; SEG2="svc-1.seg.d2/primary"
+cross_ero() { echo "$(ero "$D1" "$SEG1") $(ero "$D2" "$SEG2")" | xargs; }
+want_cross_path() { # key: the two segments' EROs together hold the expected router ids in order
+  local expected got; expected=$(J "' '.join(d['service']['$1'])"); got=$(cross_ero)
+  echo "     ero (segments d1 + d2): ${got:-<none>}   expected: $expected"; [[ "$got" == *"$expected"* ]]
+}
 want_path() { # key [root port symbol]: the ERO holds the expected router ids in order
   local expected got; expected=$(J "' '.join(d['${2:-service}']['$1'])"); got=$(ero "${3:-$PARENT}" "${4:-$SYMBOL}")
   echo "     ero: ${got:-<none>}   expected: $expected"; [[ "$got" == *"$expected"* ]]
@@ -127,30 +135,30 @@ want_path() { # key [root port symbol]: the ERO holds the expected router ids in
 heard() { # service tunnel state: the MDSC read that state of the tunnel back from the PNC / PCE (YANG-push hint, then a read of the ietf-te state)
   "${COMPOSE[@]}" logs mdsc 2>&1 | grep -aq "tunnel state: $1/$2 is $3"
 }
-until_ 60 "the MDSC was told by the parent PCE that svc-1 is active" heard svc-1 primary active
+until_ 60 "the MDSC read that svc-1 (laid by itself across the domains) is active" heard svc-1 primary active
 
 step "5. LSP up on the expected path (n1 n2 n3 n4 n5)"
-until_ 60 "ERO equals expectedPathRouterIds" want_path expectedPathRouterIds || diag parent-pce pce-d2
+until_ 60 "the segments together are on n1 n2 n3 n4 n5" want_cross_path expectedPathRouterIds || diag mdsc pnc-d1 pnc-d2 pce-d1 pce-d2
 
 step "6. inject the fault (carrier down on n3 port 2 and n4 port 1)"
 "$HERE/fault.sh" down && ok "medium accepted both carrier-down writes" || bad "fault injection failed"
 until_ 60 "n3 logged [LINK-DOWN]" bash -c "${COMPOSE[*]} logs n3 2>&1 | grep -q 'LINK-DOWN'"
 until_ 60 "n4 logged [LINK-DOWN]" bash -c "${COMPOSE[*]} logs n4 2>&1 | grep -q 'LINK-DOWN'"
 
-step "7. recovery: transit failure -> signalling to ingress -> PCRpt DOWN -> parent reroute"
+step "7. recovery: transit failure -> signalling to ingress -> PCRpt DOWN -> the domain PCE reroutes its segment"
 until_ 60 "domain PCE d2 received the failure report" bash -c "${COMPOSE[*]} logs pce-d2 2>&1 | grep -qiE 'PCRpt|report.*down|LSP.*down'"
-until_ 60 "parent PCE started a reroute" bash -c "${COMPOSE[*]} logs parent-pce 2>&1 | grep -qiE 'reportBrokenLsp|reroute'"
-until_ 120 "ERO avoids n3-n4 (n1 n2 n3 n5)" want_path expectedPathAfterFaultRouterIds || diag parent-pce pce-d2 n3 n4
+until_ 60 "domain PCE d2 started a reroute of the segment inside its domain" bash -c "${COMPOSE[*]} logs pce-d2 2>&1 | grep -qiE 'reroute|recompute'"
+until_ 120 "the segments avoid n3-n4 (n1 n2 n3 n5)" want_cross_path expectedPathAfterFaultRouterIds || diag mdsc pnc-d2 pce-d2 n3 n4
 
 step "8. restore the link; LSP stays up on the new path"
 "$HERE/restore.sh" >/dev/null && ok "carrier up written" || bad "restore failed"
-sleep 5; want_path expectedPathAfterFaultRouterIds && ok "path stable after restore (no flap)" || echo "  NOTE: path changed after restore (acceptable if the PCE re-optimised); inspect manually"
+sleep 5; want_cross_path expectedPathAfterFaultRouterIds && ok "path stable after restore (no flap)" || echo "  NOTE: path changed after restore (acceptable if the PCE re-optimised); inspect manually"
 
 step "9. remove the service through the controller; removing it again answers removed"
 if remove service; then ok "delete admitted"; else bad "delete not admitted"; diag mdsc parent-pce; fi
 echo "     $LAST" | head -c 500; echo
 gone() { ! get "http://127.0.0.1:$1/api/v1/pce/lsps" | grep -q "$2"; }
-until_ 90 "the LSP is gone from the parent PCE" gone "$PARENT" "$SYMBOL"
+until_ 90 "the segments are gone from their domain PCEs" bash -c "$(declare -f get gone); ! (get http://127.0.0.1:$D1/api/v1/pce/lsps | grep -q '$SEG1') && ! (get http://127.0.0.1:$D2/api/v1/pce/lsps | grep -q '$SEG2')"
 until_ 30 "the teardown of svc-1 is recorded as removed" bash -c "[[ \$($(declare -f http sid removal_state J); EXP='$EXP'; MDSC=$MDSC; CT='$CT'; DATA='$DATA'; removal_state service primary) == removed ]]"
 
 step "10. a service inside one domain: MDSC -> the domain's PNC -> the domain PCE"
