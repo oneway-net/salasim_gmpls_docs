@@ -7,12 +7,13 @@ import fitness
 class F4Vocabulary(unittest.TestCase):
     def test_simulation_symbols_count(self):
         for ident in ["SimFramesHandler", "simTimeMs", "sim_time", "effective-sim-time", "runId", "simulator-run-id",
-                      "frameIndex", "FutureFrameTLV", "speedup", "SIM_NS", "lookahead-frames", "sim"]:
+                      "frameIndex", "FutureFrameTLV", "speedup", "SIM_NS", "lookahead-frames", "sim",
+                      "currentSlice", "stableFrames", "MPLS_CrossSnapshot_Algorithm", "triggerSnapshot"]:
             self.assertIsNotNone(fitness.f4_hit(ident), ident)
 
     def test_unrelated_words_do_not_count(self):
-        for ident in ["SIMPLE_NETWORK", "simple", "similar", "Simplex", "ethernetFrame", "networkSlice", "frame",
-                      "runtime", "rerun", "SIMD"]:
+        for ident in ["SIMPLE_NETWORK", "simple", "similar", "Simplex", "LabelRequestWFrameRelayLabelRange",
+                      "executorSnapshot", "LedgerSnapshot", "runtime", "rerun", "SIMD"]:
             self.assertIsNone(fitness.f4_hit(ident), ident)
 
 

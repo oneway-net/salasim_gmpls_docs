@@ -84,7 +84,21 @@ def strip_yang_strings(text: str) -> str:
 # matched against the identifier with '-' and '_' removed, lower-cased
 F4_TERMS = ["simulation", "speedup", "simtime", "runid", "runepoch", "frameindex", "frameidx", "frameid",
             "framenumber", "framenum", "snapshotindex", "futureframe", "loadframe", "currentframe", "frametransition",
-            "salasimframe", "framewindow", "lookaheadframes", "clockanchor", "topologyclock"]
+            "salasimframe", "framewindow", "lookaheadframes", "clockanchor", "topologyclock",
+            # simulated-time units: a topology version is the real concept (R4)
+            "slice", "frame", "crosssnapshot", "triggersnapshot", "currentsnapshot", "capturedsnapshot",
+            "executingsnapshot", "startedsnapshot", "failedsnapshot", "activesnapshot", "completionsnapshot"]
+# 'frame' is also a wire word (OSPF API frames, PCEP frames): those files and the few JSON/property keys still shared
+# with the backend's profile contract (renamed together with it, R6) are not counted
+F4_WIRE_PATH_PARTS = ("ospf", "api")  # .../ospf/api/...
+F4_SHARED_KEYS = {"releasedAtSlice", "sliceIndex", "stableFrames", "lookaheadSliceCount", "firstSeenSlice", "nextSlice",
+                  "staleIntentMaxSliceLag", "staleConfirmDriftFrames", "staleTriggerSliceLimit",
+                  "feasibilityFullAuditFrames", "salasim.pce.parent.reroute.staleIntentMaxSliceLag",
+                  "salasim.pce.staleConfirmDriftFrames", "pce.recovery.staleTriggerSliceLimit",
+                  "pce.recovery.feasibilityFullAuditFrames",
+                  # algorithm class names the backend's capability registry and profile defaults load by name (R6)
+                  "MPLS_CrossSnapshot_Algorithm", "MPLS_CrossSnapshot_AlgorithmManager",
+                  "MPLS_CrossSnapshot_AlgorithmPreComputation"}
 # 'Sim' as its own word at the start of a camel/snake/kebab identifier: SimFramesHandler, sim_time, sim-time
 F4_SIM_PREFIX = re.compile(r"^(?:(?:Sim|sim)(?:[A-Z_\-]|$)|SIM(?:_|$))")
 IDENT_JAVA = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -94,6 +108,8 @@ F4_URL = re.compile(r"/sim/")
 
 def f4_hit(ident: str) -> str | None:
     norm = ident.replace("-", "").replace("_", "").lower()
+    if "framerelay" in norm:
+        norm = norm.replace("framerelay", "")
     for t in F4_TERMS:
         if t in norm:
             return t
@@ -102,9 +118,20 @@ def f4_hit(ident: str) -> str | None:
     return None
 
 
+def is_wire_path(path: Path) -> bool:
+    parts = path.parts
+    if "FrameRelay" in path.name:  # RSVP Frame Relay label range, a protocol object
+        return True
+    return any(parts[i:i + 2] == F4_WIRE_PATH_PARTS for i in range(len(parts) - 1))
+
+
 def scan_idents(path: Path, text: str, ident_re: re.Pattern, key: str, out: list[Violation]):
+    if key.startswith("F4/") and is_wire_path(path):
+        return
     for lineno, line in enumerate(text.splitlines(), 1):
         for m in ident_re.finditer(line):
+            if key.startswith("F4/") and m.group() in F4_SHARED_KEYS:
+                continue
             t = f4_hit(m.group())
             if t:
                 out.append((key, f"{rel(path)}:{lineno}: {m.group()} [{t}]"))

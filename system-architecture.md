@@ -160,7 +160,7 @@ sim           → 核心北向 / core_api_v1 / 平台服务接口 / K8s / 链路
 | F1 | Java 模块/工件依赖方向 | Maven Enforcer `bannedDependencies` | 0 |
 | F2 | Java 包规则:compute 不依赖 signaling;核心包不引用仿真包;Emulator 网元逻辑不依赖介质客户端 | ArchUnit(冻结存量违规) | 存量 |
 | F3 | Python 包边界(`salasim`、`salasim_sim`、`salasim_core_history`) | import-linter | 存量 |
-| F4 | 核心/设备仓库不得出现仿真概念 | **按符号扫描**(类名、包名、方法名、YANG 节点名、JSON 字段名),词表 `Simulation*`、`speedup`、`simulationTimeMs`、`runId`、`frameIdx`、`/sim/`…;`frame`/`slice` 只在"快照/统计切片"语义下计入,以太网帧和网络切片不计;日志与载荷字段另做文本扫描 | 存量 |
+| F4 | 核心/设备仓库不得出现仿真概念 | **按符号扫描**(类名、包名、方法名、YANG 节点名、JSON 字段名),词表 `Simulation*`、`speedup`、`simulationTimeMs`、`runId`、`frameIdx`、`/sim/`…;`slice`/`frame`/`crosssnapshot` 与"触发/当前/开始版本"类快照名一律计入(拓扑版本才是真概念),只豁免协议里的帧(`ospf/api`、Frame Relay 标签)和还与 backend 契约共用的 JSON/属性键与算法类名(`F4_SHARED_KEYS`,随 R6 一起改);日志与载荷字段另做文本扫描 | 存量 |
 | F5 | 核心 YANG 不 import `salasim-yang-sim` | `validate.sh` 扩展 | 存量 |
 | F6 | 核心 schema 零外部外键;核心视图不引用 `sim.*`;sim/平台 SQL 只出现 `core_api_*` | Postgres 临时实例 + 目录检查 + SQL 静态扫描 | 0(新 DDL) |
 | F7 | 取时间只经注入的 `Clock` | ArchUnit:禁止直接 `System.currentTimeMillis()`/`Instant.now()`(白名单:时钟适配器) | 存量 |
