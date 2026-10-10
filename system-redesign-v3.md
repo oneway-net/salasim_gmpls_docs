@@ -299,6 +299,14 @@ Backend 拆成两个顶层包、两个进程,共用一个平台库(§4.2)。
 >
 > **环境发现(影响以后所有 Java 测试)**:本机 JVM 默认开启 SOCKS 代理(`127.0.0.1:10808`),而 `socksNonProxyHosts` 里的 `127.0.0.0/8` 不是 Java 支持的写法,所以连环回地址的 JDBC 会失败("UnknownHostException: 127.0.0.1")。需要加 `-DsocksNonProxyHosts=localhost|127.0.0.1|::1`。沙箱里 Bash 取不到 Maven Central 与 Postgres,所以新增 `.claude/pg-java.sh`(preview 进程,联网,起临时 Postgres 并跑 Maven 测试)。
 
+> **R2b + R3b 实施状态(2026-10-10,本地提交,未推送;用户同意合并)**:
+> - **controller**(`51cd970`、`a85b05c`):`ProtectionManager` 现在管理**所有**业务,不受保护的业务只有主隧道;`ServiceProvisioningRpcs` 重写为"解析 → 管理器 → 按管理器持有的状态作答",不再把调用方的业务树原样转给 PCE;`LspTunnelPort` 用 `add-lsp`/`remove-lsp`/`query-lsps` 与 PCE(或域内业务经 PNC)通信,LSP 名 `<service-id>/<tunnel-id>`;PNC 转发五个 LSP RPC 与 `lsp-state-changed`;`query-services` 支持按状态、分页;`wait=outcome` 支持(到主隧道承载流量或失败、删除时到业务消失,超时则 `timed-out true` 且不取消);每个生命周期步骤(requested/admitted/rejected/deleting/deleted,带所选 LSP)作为 `service-lifecycle` 事实发布。`NamespaceRebase`、`PceTunnelPort`、旧的业务级转发已删除。测试:`ServiceManagementTest` 17 项、`LspTunnelPortTest`(真实 schema 往返)、`PncServiceRpcsTest` 等,controller 共 196 项;数据库相关 18 项(`JdbcProtectionStoreTest` 13、`AlarmBookTest` 5)在真实 Postgres 上通过。
+> - **告警**(controller `a85b05c`、backend `37fa914`、yang `6dd843d`):管理器把读到的状态告诉观察者,`ServiceAlarms` 决定何时升起/清除(`lsp-down` major:LSP down 或建立失败,直到 active 或 removed;`service-unprotected` minor:受保护业务没有可用备用;业务消失时清除其全部告警);`intent.alarm` 记录现在有效的告警,每个真实变化只发布一次事实;`query-alarms`、`acknowledge-alarms` 两个北向 RPC;重启后第一次读取就清除已不成立的告警。**网络里发生的链路级告警(来自链路状态事实)还没有来源**,留给 R4 之后。
+> - **PCE**(`cc29910`):`salasim-service` 模块与 `create/delete/query-services`、`service-state-changed` 全部删除;共用的树工具移入 `RpcTrees`;`lsp-update` 事实只用 `lsp-name`;PCE 测试 978 项,仅有的 5 个错误是已知的 `HttpControlAsyncTest`(沙箱不能绑端口)。
+> - **YANG**(`552494d`、`0e9ac69`、`6dd843d`):`salasim-service-fleet`(2026-10-10):调用方不再列隧道,删除只带 service-id;`salasim-service` 删除;`salasim-service-types` 删去只有旧模块用的三个 grouping;`salasim-fact`(2026-10-10):`lsp-update` 的 `service-id`/`tunnel-id` 删除,`lsp-name` 必填。netconf 的整工件解析测试现在按清单核对每个模块的修订,不再写死。
+> - **参考场景**(docs `d7fa372`)按新契约改写(请求不带隧道、状态读核心库、检查生命周期事实),**没有在任何机器上跑过**;README 记下了三处未验证。
+> - **仍然未做**:① 重试策略(`intent.retry`):PCE 的退避与重试还在,controller 对失败的主隧道还没有自己的重试;这是 R4 删除 PCE 重试的前提;② 保护计时器的截止时刻持久化(`hold_off_until`、`wait_to_revert_until` 已有列但管理器未写);③ `update-lsp`、`compute-paths` 仍为 `operation-not-supported`;④ 组合拓扑经 NETCONF 交给父 PCE(现在仍是共享文件);⑤ 历史服务的 catch-up(用 `query-services` 补读)和链路级告警来源;⑥ PCE 内部注册表仍以"业务/隧道"为键,LSP 名只在北向适配。
+
 顺序理由:先定契约(R0),再让事实有地方去(R1),再让意图可靠(R2),然后 PCE 才能安全地丢掉业务和重试(R3、R4);emulator 独立(R5);平台/仿真最后,因为它依赖前面全部的北向与视图(R6)。
 
 ## 8. 风险与未验证
