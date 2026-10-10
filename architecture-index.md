@@ -1,11 +1,12 @@
 # 架构文档索引与优先级
 
-> 更新:2026-10-09。冲突时按下表从上到下的优先级裁决;被取代的内容在原文头部或原位标注。
+> 更新:2026-10-10。冲突时按下表从上到下的优先级裁决;被取代的内容在原文头部或原位标注。
 
 ## 活文档(按优先级)
 
 | # | 文档 | 权威范围 |
 |---|---|---|
+| 0 | `system-design-v4.md` | 2026-10-10 系统设计 v4:三个平面、ACTN 接口、数据库分层(mdsc-db + 平台 ClickHouse)、YANG 标准化、一致性模型、实施阶段 P0–P11;与下列文档冲突时以本文为准 |
 | 1 | `control-system-architecture.md` (v2) | 分层与依赖规则、核心对象与权威来源、时间模型、仿真模块、保真度 |
 | 2 | `commercial-architecture.md` | 商业运营:SaaS、测试床池、计费、合规 |
 | 2a | `system-redesign-v3.md` | 四个组件(Backend、controller、PCE、emulator)的职责、接口与数据库;实施阶段 R0–R7(2026-10-09) |
@@ -23,6 +24,7 @@
 
 | 文档 | 被取代的部分 | 取代者 |
 |---|---|---|
+| `system-redesign-v3.md` §4、`global-design-2026-10-10.md` E1 传输、`core-api-v1.md` 历史视图 | 核心库内的 history schema 与 history 服务、RESTCONF 事实流 | `system-design-v4.md` §1.1a、§3 |
 | `database-redesign.md` | 存储形状 | `network-native-database-design.md` |
 | `telemetry-results-model.md` | 存储部分 | `network-native-database-design.md` |
 | `controller-hub-plan.md` | 故障经控制器 NETCONF 下发、节点按仿真时钟生效;Backend 经控制器启停时钟 | `control-system-architecture.md` v2 D8–D10 |
