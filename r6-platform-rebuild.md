@@ -69,6 +69,17 @@ src/salasim_core_history/   不变(E1 之后只订阅 MDSC)
 - **会话**:`POST /api/v2/testbeds/{id}/sessions`(核心与 fleet 已部署、场景存在、speedup > 0;测试床同一时刻一个会话,`supersede` 可顶替)、`GET /api/v2/sessions[/{id}]`、`POST .../stop`(已结束的 409)、`GET .../actions`;任务 `sim.session.run` 编译场景、起会话时钟(`running`)、批量记录计划(`ActionStore.plan_many`)、回放、`finalizing` → `completed`;被 stop 则以 API 写的 `stopped` 为终点(没做完的留作 planned);回放器自己出错则 `failed`。会话任务与部署/清理共用测试床作用域,所以会话期间不会被部署或清理打断。
 - 验证:`tests/sim` 101 个(回放的到期时刻/迟到/失败继续/分片/停止、计划的形状、会话的完成/停止/失败/重复启动、API、运行任务对链路平面与 MDSC 的调用、MDSC 请求体),`tests/pg` 42 个(含 `plan_many` 的顺序与 jsonb 数组)。**没做**:`install_contact_plan`(父 PCE 目前只有 Java 接口 `installPlan`,没有写入它的 RPC/数据存储,所以接触计划只被编译、没有被安装);fleet 与会话在真实集群里的联调(未验证)。
 
+### 场景与测试床合并(2026-10-11)
+
+原先场景(`sim.scenario`)与测试床描述(YANG 网络)是两个资源,会话再单独指定场景,二者可能对不上(场景改了、测试床是别的场景建的)。现在**场景是测试床描述的一部分**:
+
+- `PUT /api/v2/testbeds/{id}` 的描述是 `network`(真实或静态设备的 YANG 网络)**或** `scenario`(星座、地面站、时间跨度、故障、负载),二者恰给一个。给 `scenario` 时网络由它编译得到,**两者一起写入**(`deployment_config = {network, scenario}`),`config_digest` 是网络的摘要。
+- 没有独立的场景资源、`materialize`、`sim.scenario` 表、`ScenarioStore`。编译器由仿真模块经 `Platform.compile_scenario` 挂上;没有仿真模块的平台拒绝 `scenario`。
+- 部署记录它部署了什么:核心部署写 `metadata.core.digest`(并清掉 `fleet`,要求重新部署 fleet),fleet 部署写 `metadata.fleet.digest`。
+- `POST /testbeds/{id}/sessions` 只给 `speedup`:测试床要有场景,且核心和 fleet 的摘要都等于描述的摘要,否则 409;会话的 `scenarioRef` 记启动时的摘要;运行任务发现测试床又被改写过就让会话失败,而不是回放错的网络。
+- 只改负载或故障不改网络(链路集合只由几何决定),所以**不需要重新部署**。
+- 一个测试床换成静态 `network` 描述后,场景随之消失,不能再起会话。
+
 ## 3. 不迁移的东西(随 S6 删除)
 
 SQLite 存储(`runtime_store`、`operations`、`service_store`、`tunnel_store`、`simulation_run_store`、`pce_state_schema`、`configuration_profile_store`);对 PCE/emulator/controller run RPC 的直接调用(`agent_clients`、`pce_run_input`、`node_clock_control`、`fault_*_delivery`、`controller_client` 的 run 部分);`topology_clock_service`;`telemetry_consumer`(NATS);`v3_statistics`(统计改由 S6 的 `results` 从 `core_api_v1` 算);`/internal/pce/*`;`slice_*`、`simulation_*`、`availability_*`(窗口与可用性在 `results` 里按新模型重写)。
