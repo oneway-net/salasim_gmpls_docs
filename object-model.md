@@ -84,7 +84,7 @@ Fact ──投影为─▶ 历史行
 
 - **D1 跨域 LSP:MDSC 缝合,父 PCE 只算路。**(严格 ACTN)MDSC 把跨域 Tunnel 作为一个对象管理,按域序列经各域 PNC 向域 PCE 发 `add-lsp`/`remove-lsp`,自己负责 BREAK 再 MAKE 的顺序、段间一致性、失败回滚与补偿;父 PCE 退化为无状态的 `compute-paths`(H-PCE 算路),不持有跨域 LSP,不发 PCInitiate。
 - **D2 保护组:保持现状。**保护逻辑留在 `ProtectionManager`,不新增显式对象;PCE 继续接受"与某条路径分离"的算路约束。
-- **D3 池化连接:整个删除。**生产里没有调用者能打开复用开关,是死功能。
+- **D3 池化连接:整个删除。**生产里没有调用者能打开复用开关,是死功能。**已完成(2026-10-10)**:pce `e4522c7`、yang `2d6b22e`,见 §9。
 
 ## 6. 与现有代码的差距
 
@@ -94,7 +94,7 @@ Fact ──投影为─▶ 历史行
 | `compute-paths` 未实现 | `salasim-pce-lsp` 的 RPC 返回 not-supported | 成为 D1 的前提,先实现 |
 | MDSC 还不管段 | 控制器把业务当"一个 LSP 一个隧道",经 `LspTunnelPort` 发 LSP RPC | 增加跨域 Tunnel:段表、BREAK/MAKE 序列、补偿、对账(`intent.tunnel_segment` 之类) |
 | PCE 注册表按业务键 | `ServiceRegistry` 遗留、LSP 名在内部拆 `service/tunnel` | 改为按 LSP 名 |
-| 复用池 | `EndToEndLspReuseRegistry`、`tryBindReadyPhysicalForReroute`、遥测与事实里的池相关字段 | 删除(D3) |
+| 复用池 | (已删除,pce `e4522c7`) | 完成 |
 | 链路标识多套 | `physicalLinkId`、`faultTargetId`、有向边、跨域链路键,靠 `LinkIdentityRegistry` 翻译 | 设备侧给出唯一 Link 标识,TE 链路只作有向投影 |
 | 保护的 PCE 侧语义 | `protectionReferenceEro`、`protectionDiversity` | 保持(D2);记录为已知的概念泄漏 |
 
@@ -118,7 +118,7 @@ D1 是最大的一项:它把约 4000 行跨域恢复逻辑(拆分后的 `ParentR
 
 | # | 优化 | 现在 | 目标 | 收益 |
 |---|---|---|---|---|
-| O1 | **意图与状态分开(spec/status)**,每类对象一个对账器 | Tunnel、重试、告警、保护的状态散在 `ProtectionManager` 与多张表 | `spec`(调用方意图,只读)与 `status`(对账器根据事实写)分列;一个对象类型一个对账循环,重试、截止时刻、告警都是对账器的输出 | 重试、告警、幂等重放有统一位置;符合"真实管控系统" |
+| O1 | **【暂缓:用户认为太重】意图与状态分开(spec/status)**,每类对象一个对账器 | Tunnel、重试、告警、保护的状态散在 `ProtectionManager` 与多张表 | `spec`(调用方意图,只读)与 `status`(对账器根据事实写)分列;一个对象类型一个对账循环,重试、截止时刻、告警都是对账器的输出 | 重试、告警、幂等重放有统一位置;符合"真实管控系统" |
 | O2 | **类型化标识** | LSP 名是字符串,PCE 内部在最后一个 `/` 处拆 | `ServiceId`、`TunnelId`、`LspName`(只解析一次)、`DomainId`、`NodeId`、`LinkId`、`DirectedLink` 值对象 | 去掉字符串拆分与键不一致的一类错误 |
 | O3 | **LSP 代际一等公民** | 过期判断有三套:运行代际围栏、ERO 修订号、attempt id | `LspRef(name, generation)`;提交、确认、事实都带代际,过期统一为代际比较 | 一套机制代替三套;D1 后控制器与 PCE 对齐 |
 | O4 | **跨域 Tunnel 做成组合对象** | "部分成功"隐含在待清理记录里 | `Segment{domain, lsp, state}`;状态 PLANNED→BREAKING→MAKING→UP / PARTIAL / FAILED,显式存 `intent.tunnel_segment` | D1 的核心;部分状态可查询、可对账、可重启恢复 |
@@ -154,3 +154,13 @@ M3、M4、M5、M6:相互独立,可穿插
 - 不新增保护组对象(D2)。
 - 不动 `protocols`、`topology` 两个底层库的 WSON 部分(保留 WSON 的既定决定)。
 - 不在 D1 之前拆 `ParentMdLspReroute` 剩下的四块——它们会随 D1 整体迁走。
+
+## 9. 实施记录
+
+- **D3 复用池删除(2026-10-10)**:pce `e4522c7`、yang `2d6b22e`、netconf `d565f0f`、controller `1cbf02a`。
+  - PCE:删除 `EndToEndLspReuseRegistry`(其唯一开关在早先删掉的 HTTP run-start 路径里,生产中打不开)以及穿过它的全部分支:建立时的命中与未命中、拆除时的"放回池"与"回收"、重路由时的物理隧道改绑、池回收扫描及其恢复阶段、池事实 `tunnel-reuse`、遥测注册表里的连接证据、LSP 库与发射器里"连接名/隧道名"的间接层——线名与隧道名重新是同一个字符串。域内 LSP 的 HTTP 初始化处理器同样去掉了池分支。
+  - YANG:去掉 `end-to-end-reuse` 分组及其在 `salasim-pce-run`、`salasim-pce-fleet` 里的引用,以及核心 `salasim-service-types` 的 `reuse-result` 叶。
+  - 测试:删除 `EndToEndLspReuseRegistryTest` 与 8 个只验证池行为的用例;PCE 从 859 项变为 823 项,全部通过;netconf 60、controller 213 项通过;fitness 全部在基线。
+  - **未动**:backend 的旧 run 流程(`topology_clock_service`、`scenario_compiler` 里的 `endToEndReuse` 键)仍会发送这个字段,但 PCE 已不接收;随 R6 删除。
+  - 单例清单(§8.1 的 M1)少了一项:`EndToEndLspReuseRegistry.shared()` 的 33 处调用已消失。
+- **O1 暂缓**(用户:"太重"):不引入对账器与 spec/status 拆分;重试、告警、截止时刻继续按现状放在 `ProtectionManager` 与 `intent.*` 里。
