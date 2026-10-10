@@ -77,3 +77,13 @@
 3. E2:PCE/MDSC 事实瘦身到"事件 + 时间";分析移到平台;
 4. D1 + E3;
 5. R6 backend 重建与 R7 前端;G6、G7 穿插。
+
+## 6. 实施记录
+
+- **E4 第一部分(2026-10-10)**:
+  - YANG `0009c23`:删除 `salasim-pce-run`、`salasim-pce-fleet`、`salasim-run-config`、`salasim-run-runtime-config`、`salasim-fleet`、`salasim-pce`。**`salasim-simulation` 保留**:`salasim-fault` 与 `salasim-sat-topology` 引用它。netconf `fffc35b`:通用输入校验测试改用 `salasim-pce-lsp`(must 用例删除:现行契约里没有 must)。
+  - topology `cb9dd78`:删除 `topologyModuleBase`(17.9 k)、`es.tid.ipnms`、`es.tid.provisioningManager` 与独立 jar 的 profile;`TopologyProcess` 移到 `net.salasim.topology`。两个 BGP4Peer 套接字测试在沙箱里无法绑定端口,未运行。
+  - emulator `ae4bc1d`:删除 `vntm`、`netManager`、`ipnms`、`pce.client.tester`;PCC 会话不再分派 VNTM 的 TE-link 确认;`LSPManager` 里无人调用的 Redis 写入删除。
+  - PCE `8701aa9`:删除 `es.tid.pce.client`(QuickClient)、`server.management`(每次启动都开的 telnet CLI)、VLAN 算法、PCC jar profile 与旧 run-start 夹具。controller `8a374a4`:旧 prepare-run 夹具。
+  - 测试:topology 64、emulator 84、PCE 812、controller 213、netconf 58,全部通过;fitness 全部在基线。
+- **E4 第三部分(backend 旧 run 流程)暂停,需要决定边界**:import 图显示平台部分(配置、档案、参考数据、系统路由)经 `api_helpers`、`app_state`、`config` 传递地引用了几乎全部模块——从保留的路由出发可达 86 个模块、66.8 k 行,只有 14 个模块(1.8 k 行)是真正孤立的。也就是说"删旧 run 流程"在今天的代码结构下等于 R6 的重建:要么先解开 `api_helpers`/`app_state` 让平台部分独立再删,要么直接在新包里重建平台 API 后整体删除 `salasim_backend`。
