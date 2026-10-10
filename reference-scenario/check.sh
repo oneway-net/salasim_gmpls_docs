@@ -37,55 +37,75 @@ step "3. MDSC composed the topology (shared file + RESTCONF mount state)"
 get "http://127.0.0.1:$MDSC/restconf/data" >/dev/null && ok "MDSC RESTCONF answers" || bad "MDSC RESTCONF silent"
 get "http://127.0.0.1:$PARENT/api/v1/pce/inter-domain-links" | head -c 400 | sed 's/^/     inter-domain-links: /'; echo
 
-step "4. provision the service across both domains (through the controller: RESTCONF on the MDSC)"
-RESTCONF="http://127.0.0.1:$MDSC/restconf/operations/salasim-service-fleet"
-restconf() { # rpc body  -> prints the HTTP status on the last line
-  curl -s --max-time 90 -w '\n%{http_code}' -X POST -H 'Content-Type: application/yang-data+json' \
-    -H 'Accept: application/yang-data+json' -d "$2" "$RESTCONF:$1"
+step "4. provision the service across both domains (through the controller: RESTCONF ietf-te on the MDSC)"
+DATA="http://127.0.0.1:$MDSC/restconf/data/ietf-te:te/tunnels"
+CT='Content-Type: application/yang-data+json'
+http() { # method path [body] -> prints the body, then the HTTP status on the last line
+  curl -s --max-time 90 -w '\n%{http_code}' -X "$1" -H "$CT" -H 'Accept: application/yang-data+json' ${3:+-d "$3"} "$DATA$2"
 }
-allAdmitted() { python3 -c "import json,sys;o=json.load(sys.stdin)['salasim-service-fleet:output'];sys.exit(0 if o.get('all-admitted') else 1)"; }
-# the request body of a service of expected.json (key: service | intraService; mode: create | delete)
+# the tunnel of a service of expected.json (key: service | intraService | protectedService)
 mkbody() {
   python3 - "$EXP" "$1" "$2" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))[sys.argv[2]]
-svc = {'service-id': d['serviceId']}      # deleting names only the service: the controller knows its tunnels
-if sys.argv[3] in ('create', 'create-protected'):
-    svc.update({'source': d['sourceRouterId'], 'destination': d['destinationRouterId']})
-    svc['bandwidth'] = str(d['bandwidthBps'])
-    svc['path-planning'] = {'optimization-metric': [{'metric-type': ('salasim-service-types:' if m == 'delay-variation'
-        else 'ietf-te-types:') + 'path-metric-' + m} for m in d['pathMetrics']],
-        'candidate-path-count': d['pathPlanning']['candidatePathCount']}
-    if sys.argv[3] == 'create-protected':
-        p = d['protection']
-        svc['protection'] = {'mode': p['mode'], 'diversity': p['diversity'], 'revertive': p['revertive'],
-                             'hold-off-time': p['holdOffMillis'], 'wait-to-revert': p['waitToRevertSeconds']}
-print(json.dumps({'salasim-service-fleet:input': {'service': [svc]}}))
+w = len(d['pathMetrics'])
+def metric(m, weight):
+    return {'metric-type': ('salasim-te-ext:' if m == 'delay-variation' else 'ietf-te-types:') + 'path-metric-' + m,
+            'weight': weight}
+t = {'name': d['serviceId'], 'source': {'te-node-id': d['sourceRouterId']}, 'destination': {'te-node-id': d['destinationRouterId']},
+     'bidirectional': False,
+     # the model's unit is bytes per second
+     'te-bandwidth': {'generic': str((int(d['bandwidthBps']) + 7) // 8)},
+     'primary-paths': {'primary-path': [{'name': 'primary', 'k-requested-paths': d['pathPlanning']['candidatePathCount'],
+         'optimizations': {'optimization-metric': [metric(m, w - i) for i, m in enumerate(d['pathMetrics'])]}}]}}
+if sys.argv[3] == 'create-protected':
+    p = d['protection']
+    t['protection'] = {'protection-type': 'ietf-te-types:lsp-protection-1-for-1', 'protection-reversion-disable': not p['revertive'],
+                       'hold-off-time': p['holdOffMillis'], 'wait-to-revert': p['waitToRevertSeconds']}
+    t['secondary-paths'] = {'secondary-path': [{'name': 'standby', 'disjointness': p['diversity'] if p['diversity'] != 'srlg' else 'srlg link',
+        'optimizations': {'optimization-metric': [metric(m, w - i) for i, m in enumerate(d['pathMetrics'])]}}]}
+print(json.dumps({'ietf-te:tunnel': [t]}))
 PY
 }
-# A target is mounted by the controller a few seconds after it starts. Until then the controller refuses with
-# controller-pce-unavailable / controller-pnc-unavailable and retry-safe=true ("nothing was sent"): a client asks again.
-provision() { # key [mode] -> LAST holds the answer; succeeds when the service was admitted
-  local body attempt resp code
-  body=$(mkbody "$1" "${2:-create}"); LAST=""
+sid() { J "d['$1']['serviceId']"; }
+tunnel_state() { # key -> the tunnel as the MDSC reports it (configuration and state), JSON
+  http GET "/tunnel=$(sid "$1")" | head -n -1
+}
+primary_failure() { # key -> the failure type on the primary path, if any
+  tunnel_state "$1" | python3 -c "
+import json,sys
+try: t=json.load(sys.stdin)['ietf-te:tunnel'][0]
+except Exception: sys.exit(0)
+for p in t.get('primary-paths',{}).get('primary-path',[]): print(p.get('salasim-te-ext:failure',{}).get('type',''))"
+}
+# A target is mounted by the controller a few seconds after it starts. Until then the controller marks the tunnel's primary
+# path failed with controller-pce-unavailable / controller-pnc-unavailable ("nothing was sent"): a client writes it again.
+provision() { # key [mode] -> succeeds when the tunnel was accepted and not refused
+  local body attempt resp code f; body=$(mkbody "$1" "${2:-create}"); LAST=""
   for attempt in $(seq 1 30); do
-    resp=$(restconf provision-services "$body"); code=${resp##*$'\n'}; LAST=${resp%$'\n'*}
-    if [[ "$code" == 2* ]] && echo "$LAST" | allAdmitted; then return 0; fi
-    echo "$LAST" | grep -q '"controller-p[a-z]*-unavailable"' || return 1
-    echo "     attempt $attempt: the controller has not mounted the target yet (retry-safe), asking again"; sleep 3
+    resp=$(http PUT "/tunnel=$(sid "$1")" "$body"); code=${resp##*$'\n'}; LAST=${resp%$'\n'*}
+    [[ "$code" == 2* ]] || return 1
+    sleep 2; f=$(primary_failure "$1")
+    case "$f" in
+      "") return 0 ;;
+      controller-p*-unavailable) echo "     attempt $attempt: the controller has not mounted the target yet ($f), writing it again"
+        http DELETE "/tunnel=$(sid "$1")" >/dev/null; sleep 3 ;;
+      *) LAST="refused: $f"; return 1 ;;
+    esac
   done
   return 1
 }
-remove() { # key -> LAST holds the answer; succeeds when the delete was admitted
-  local resp code; resp=$(restconf delete-services "$(mkbody "$1" delete)"); code=${resp##*$'\n'}; LAST=${resp%$'\n'*}
-  [[ "$code" == 2* ]] && echo "$LAST" | allAdmitted
+remove() { # key -> succeeds when the delete was taken
+  local resp code; resp=$(http DELETE "/tunnel=$(sid "$1")"); code=${resp##*$'\n'}; LAST=${resp%$'\n'*}
+  [[ "$code" == 2* ]]
 }
-routedTo() { # owner device: the first result says where the service went
-  echo "$LAST" | python3 -c "import json,sys;r=json.load(sys.stdin)['salasim-service-fleet:output']['result'][0];sys.exit(0 if (r.get('owner'),r.get('pce'))==(sys.argv[1],sys.argv[2]) else 1)" "$1" "$2"
+removal_state() { # key leg -> lifecycle of that leg's teardown in removals
+  curl -s --max-time 10 -H 'Accept: application/yang-data+json' \
+    "http://127.0.0.1:$MDSC/restconf/data/salasim-te-ext:removals/removal=$(sid "$1")%2F$2" \
+    | python3 -c "import json,sys;print(json.load(sys.stdin)['salasim-te-ext:removal'][0]['lifecycle-state'])" 2>/dev/null
 }
-if provision service; then ok "service admitted by the PCE through the controller"; else bad "service not admitted"; diag mdsc parent-pce pce-d1 pce-d2; fi
+if provision service; then ok "service accepted by the controller (and not refused)"; else bad "service refused or not accepted"; diag mdsc parent-pce pce-d1 pce-d2; fi
 echo "     $LAST" | head -c 700; echo
-routedTo core ref-pce-core && ok "routed to the parent PCE (owner core)" || bad "not routed to the parent PCE"
 
 ero() { # [port] [symbol]: the router ids of that LSP's ERO, as the PCE on that port reports it
   get "http://127.0.0.1:${1:-$PARENT}/api/v1/pce/lsps" | python3 -c "
@@ -131,18 +151,17 @@ if remove service; then ok "delete admitted"; else bad "delete not admitted"; di
 echo "     $LAST" | head -c 500; echo
 gone() { ! get "http://127.0.0.1:$1/api/v1/pce/lsps" | grep -q "$2"; }
 until_ 90 "the LSP is gone from the parent PCE" gone "$PARENT" "$SYMBOL"
-remove service; echo "$LAST" | grep -q '"removed"' && ok "a second delete answers removed" || bad "second delete did not answer removed"
+until_ 30 "the teardown of svc-1 is recorded as removed" bash -c "[[ \$($(declare -f http sid removal_state J); EXP='$EXP'; MDSC=$MDSC; CT='$CT'; DATA='$DATA'; removal_state service primary) == removed ]]"
 
 step "10. a service inside one domain: MDSC -> the domain's PNC -> the domain PCE"
 ISYMBOL=$(J "d['intraService']['symbolicPathName']")
-if provision intraService; then ok "intra-domain service admitted"; else bad "intra-domain service not admitted"; diag mdsc pnc-d2 pce-d2; fi
+if provision intraService; then ok "intra-domain service accepted"; else bad "intra-domain service refused or not accepted"; diag mdsc pnc-d2 pce-d2; fi
 echo "     $LAST" | head -c 600; echo
-routedTo d2 ref-pnc-d2 && ok "routed through the PNC of its domain (owner d2)" || bad "not routed through ref-pnc-d2"
 until_ 60 "the MDSC was told through the PNC that svc-2 is active" heard svc-2 primary active
 until_ 90 "the domain PCE holds the LSP on n3 n4 n5" want_path expectedPathRouterIds intraService "$D2" "$ISYMBOL" || diag pnc-d2 pce-d2
 if remove intraService; then ok "intra-domain delete admitted"; else bad "intra-domain delete not admitted"; diag mdsc pnc-d2 pce-d2; fi
 until_ 90 "the LSP is gone from the domain PCE" gone "$D2" "$ISYMBOL"
-remove intraService; echo "$LAST" | grep -q '"removed"' && ok "a second intra-domain delete answers removed" || bad "second intra-domain delete did not answer removed"
+until_ 30 "the teardown of svc-2 is recorded as removed" bash -c "[[ \$($(declare -f http sid removal_state J); EXP='$EXP'; MDSC=$MDSC; CT='$CT'; DATA='$DATA'; removal_state intraService primary) == removed ]]"
 
 
 # the MDSC's northbound facts (salasim-fact network-fact), as a client receives them: RFC 8040 notification stream, SSE
@@ -155,32 +174,39 @@ stream_open() { # file seconds: subscribe to network-fact on the MDSC and record
 stream_has() { grep -q "$2" "$1"; } # file pattern
 
 step "11. a protected service inside one domain: the controller chooses primary and standby"
-RESTCONF_OPS="http://127.0.0.1:$MDSC/restconf/operations"
-restconf_saved=$RESTCONF; RESTCONF="$RESTCONF_OPS/sal-remote"
+restconf() { # rpc body -> the answer, then the HTTP status on the last line (RPCs of RESTCONF itself: the notification stream)
+  curl -s --max-time 90 -w '\n%{http_code}' -X POST -H "$CT" -H 'Accept: application/yang-data+json' -d "$2" \
+    "http://127.0.0.1:$MDSC/restconf/operations/sal-remote:$1"
+}
 stream_open "$FACTS" 600 && ok "subscribed to the MDSC's network-fact stream" || bad "could not subscribe to the MDSC's network-fact stream"
-RESTCONF=$restconf_saved
 sleep 1
 PSYM=$(J "d['protectedService']['primarySymbolicPathName']"); SSYM=$(J "d['protectedService']['standbySymbolicPathName']")
 stored() { # column: what the controller stored for svc-3, in the core database's intent schema (lower case)
   "${COMPOSE[@]}" exec -T core-db psql -U postgres -d salasim_core -tAc "select $1 from intent.protection where service_id = 'svc-3'" | tr -d '\r'
 }
 mdsc_log_count() { "${COMPOSE[@]}" logs mdsc 2>&1 | grep -ac "$1"; }
-queried() { # service-id leaf value: the controller's query-services answer has this leaf value for the service
-  restconf query-services "{\"salasim-service-fleet:input\":{\"service\":[{\"service-id\":\"$1\"}]}}" \
-    | python3 -c "import json,sys;b=sys.stdin.read().rsplit('\n',1)[0];s=json.loads(b)['salasim-service-fleet:output']['service'][0];print(s.get('$2'));sys.exit(0 if str(s.get('$2'))=='$3' else 1)"
+queried() { # service-id leaf value: leaf is oper-status (up|down) or selected-tunnel (primary|standby) of the tunnel's state
+  http GET "/tunnel=$1" | head -n -1 | python3 -c "
+import json,sys
+t=json.load(sys.stdin)['ietf-te:tunnel'][0]
+leaf='$2'
+if leaf=='oper-status':
+    v=t.get('operational-state','').split('-')[-1]
+else:
+    v=next((p['name'] for k in ('primary-paths','secondary-paths') for p in t.get(k,{}).get(k[:-1],[]) if p.get('active')), '')
+print(v); sys.exit(0 if v=='$3' else 1)"
 }
 carried() { # leg [minimum count]: the controller logged that the service moved to this leg
   [[ $(mdsc_log_count "protection: svc-3 is carried by the $1") -ge ${2:-1} ]]
 }
 if provision protectedService create-protected; then ok "protected service admitted (no tunnels in the request)"; else bad "protected service not admitted"; diag mdsc pnc-d2 pce-d2; fi
 echo "     $LAST" | head -c 500; echo
-routedTo d2 ref-pnc-d2 && ok "routed through the PNC of its domain" || bad "not routed through ref-pnc-d2"
 until_ 90 "the primary is on n3 n4 n5" want_path expectedPrimaryPathRouterIds protectedService "$D2" "$PSYM" || diag mdsc pce-d2
 until_ 90 "the MDSC was told that the standby is active (it is asked for only after the primary is)" heard svc-3 standby active
 until_ 30 "the standby is on n3 n5, diverse from the primary" want_path expectedStandbyPathRouterIds protectedService "$D2" "$SSYM" || diag mdsc pce-d2
 echo "     stored: phase=$(stored phase) selected=$(stored selected_tunnel)"
-until_ 30 "query-services through the controller: svc-3 is up" queried svc-3 oper-status up
-queried svc-3 selected-tunnel primary >/dev/null && ok "query-services: svc-3 is carried by the primary" || bad "query-services: wrong selected tunnel"
+until_ 30 "the tunnel state on the MDSC: svc-3 is up" queried svc-3 oper-status up
+queried svc-3 selected-tunnel primary >/dev/null && ok "tunnel state: svc-3 is carried by the primary" || bad "tunnel state: wrong selected tunnel"
 
 step "12. the primary link fails: the controller moves the service to the standby"
 "$HERE/fault.sh" down && ok "carrier down on the primary's link" || bad "fault injection failed"
@@ -188,9 +214,11 @@ until_ 60 "the MDSC was told that the primary of svc-3 is down" heard svc-3 prim
 until_ 30 "the service is carried by the standby" carried standby || diag mdsc pce-d2
 until_ 30 "the MDSC's stream carried the standby's LSP facts (domain PCE -> PNC -> MDSC -> client)" stream_has "$FACTS" '"lsp-name":"svc-3/standby"'
 until_ 30 "the MDSC's stream carried the controller's protection-selection fact for svc-3" stream_has "$FACTS" '"protection-selection":{[^}]*"service-id":"svc-3"'
-until_ 30 "query-services: svc-3 is carried by the standby and still up" bash -c "$(declare -f restconf queried); EXP='$EXP'; RESTCONF='$RESTCONF'; queried svc-3 selected-tunnel standby && queried svc-3 oper-status up"
+until_ 30 "tunnel state: svc-3 is carried by the standby and still up" bash -c "$(declare -f http queried); EXP='$EXP'; MDSC='$MDSC'; CT='$CT'; DATA='$DATA'; queried svc-3 selected-tunnel standby && queried svc-3 oper-status up"
 
-replays() { restconf provision-services "$(mkbody protectedService create-protected)" | grep -q 'idempotent-replay'; }
+replays() { # the same tunnel written again is a replay: accepted and the primary path is not failed
+  local resp; resp=$(http PUT "/tunnel=$(sid protectedService)" "$(mkbody protectedService create-protected)"); [[ "${resp##*$'\n'}" == 2* ]] && [[ -z "$(primary_failure protectedService)" ]]
+}
 
 step "13. the controller restarts while the standby carries the service: it continues from what it stored"
 echo "     stored before the restart: selected=$(stored selected_tunnel) phase=$(stored phase)"
