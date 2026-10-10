@@ -127,7 +127,7 @@ PCE 那边其实已经有类型化的身份：帧里每条链路有 `fromNode/fr
 
 - `ietf-network-topology@2018-02-26`：`tp-id`（termination point 标识）描述写明 "Termination points can ultimately be mapped to interfaces… could, for example, refer to a port or an interface"。**没有 interface 引用 leaf。**
 - `ietf-te-topology@2020-08-06`：TP 有 `te-tp-id`（`te-types:te-tp-id` = `union { uint32; inet:ip-address }`，"mapped to a local or remote link identifier as defined in RFCs 3630 and 5305"）、`te/oper-status`（`te-oper-status`）；链路有 `te/oper-status`（`te-link-state-derived`，路径 `/networks/network/link/te/oper-status`）；节点 `te-node-id`、`signaling-address`。唯一的接口引用是 bundle 的 `src-interface-ref/des-interface-ref`。
-- `te-types@2020-06-10` 的 `te-oper-status` 见 `te-common-status`（含 up/down 等）；这就是 PCE 状态应使用的类型。
+- `te-types@2026-06-11` 的 `te-oper-status` 见 `te-common-status`（含 up/down 等）；这就是 PCE 状态应使用的类型。
 
 ### 3.3 推荐映射
 
