@@ -28,7 +28,7 @@ ietf-te 是**数据存储驱动**:建业务 = 往 `te/tunnels/tunnel` 写配置(
 
 - **P5a(已完成,yang 2d0f05a)**:`salasim-te-ext`(metric 延迟抖动 identity、lsp-name、failure、diversity-result、owner-epoch、degraded-standby),与 ietf-te 一起加载通过。`salasim-types` 不再单独建:typedef 放进 te-ext,需要时再拆。
 - **P5b 告警(已完成 2026-10-10,yang 3359f20 + controller e5a3e02,本地)**:`ietf-alarms` 取代 `query-alarms` / `acknowledge-alarms` 与 `AlarmBook` 的对外形状(alarm-list;`ack-alarm` 是标准动作 `shelve`/`purge`/`compress` 之外的 `set-operator-state` 动作,用它做 ack)。`AlarmBook` 的存储不变。范围最小,先做,验证"MDSC 的 RESTCONF 服务一个标准模块"这条路。
-- **P5c 域 PCE 用 ietf-te**:PCE NETCONF 管理面改服务 `ietf-te` 隧道(配置库监听 → `LspProvisioner`);状态写回运行库(`operational-state`、path-state、failure);`lsp-state-changed` 由 YANG-push 取代;`query-lsps`、`LspStateSubscriber` 的补齐改读运行库。删 `salasim-pce-lsp`。PNC→PCE 与 MDSC→父 PCE 同时切(同一模型)。
+- **P5c 域 PCE 用 ietf-te(分三步:P5c-1 PCE 服务 ietf-te 已完成;P5c-2 控制器/PNC 改走 ietf-te;P5c-3 删 salasim-pce-lsp)**:PCE NETCONF 管理面改服务 `ietf-te` 隧道(配置库监听 → `LspProvisioner`);状态写回运行库(`operational-state`、path-state、failure);`lsp-state-changed` 由 YANG-push 取代;`query-lsps`、`LspStateSubscriber` 的补齐改读运行库。删 `salasim-pce-lsp`。PNC→PCE 与 MDSC→父 PCE 同时切(同一模型)。
 - **P5d MDSC 用 ietf-te(CMI)**:MDSC RESTCONF 服务 `ietf-te`(监听 → `ProtectionManager`);主/备路径 = primary-path/secondary-path;`ServiceSpec` 从 tunnel 节点解析;`query-services` 与 `wait` 由读取运行库/订阅取代。删 `salasim-service-fleet`、`salasim-service-types`。
 - **P5e 后端/平台客户端**:`agent_clients.py` 等改为 RESTCONF 对 `ietf-te`(PUT/DELETE/GET)。
 - **P5f 收尾**:所有 salasim 模块统一为单一新 revision;`module-classes.txt`、README 更新;Java 常量/Python 类型从 YANG 生成(M6/G6)。
@@ -52,3 +52,22 @@ ietf-te 是**数据存储驱动**:建业务 = 往 `te/tunnels/tunnel` 写配置(
 - **操作者身份**:RESTCONF 现在没有认证,所以事实里的 operator 是固定的 `restconf-client`;P9(OIDC/TLS)接线后换成真实用户。
 - 删除 `query-alarms` / `acknowledge-alarms`(没有外部调用方)与 `AlarmRpcs`。
 - 验证:Postgres 上的 AlarmListTest(5 个,列表内容、确认、动作各分支)与 AlarmBookTest;动作在真实 DOMRpcRouter 里的路径匹配(列表无键注册)与 RESTCONF 端到端调用只能在测试机上用 `ControllerStartTest`(-Dsalasim.controller.it=true)验证,**本机没测**。
+
+## P5c-1 结果(2026-10-10,pce f638bd5 + yang 8b22d30,本地)
+
+PCE(域与父,同一套)在原有 `salasim-pce-lsp` RPC 之外同时服务 `ietf-te`:
+
+- **映射**:一条 tunnel 的每个 primary-path / secondary-path = 一条 LSP,名 `<tunnel>/<path>`。源/宿 = `source|destination/te-node-id`;带宽 = tunnel 的 `te-bandwidth/generic`(**字节/秒**十进制整数,PCE 内部 ×8 变 bit/s;十六进制浮点形式被拒绝);度量顺序 = `optimizations/optimization-metric` 按 `weight` 大者先(同权重被拒);候选数 = `k-requested-paths`;备用路径对谁分集 = 在其 `candidate-secondary-paths` 里列出它的那条主路径,否则 tunnel 唯一的主路径;分集种类 = 备用路径的 `disjointness`(srlg > node > link,缺省 link)。注意 ietf-te 里由 te-types 分组展开出的节点属于使用分组的模块(ietf-te),不是 ietf-te-types。
+- **执行**:`TunnelReconciler` 在每次提交后比较各 tunnel 与上次是否相同(结构共享,指针比较),变了的 tunnel 把其每条路径交给 `LspProvisioner.admit`(同约束 = 重放,down = 重算,failed = 再试,所以**改一下 tunnel(哪怕 description)就是"再问一次"**);不再出现的路径 `remove`。配置不合法的路径(名字、带宽)不交给机器,状态是 failed + `lsp-request-invalid`。更改已存在路径的约束仍被拒绝(`lsp-request-conflict`,删了重建),状态保持原样并带上这个 failure。
+- **状态**:`TunnelStates` 把每条路径的 `lifecycle-state`(requested/establishing/active/down/failed)、`ero`、`plsp-id`、`domain-lsp`、`updated-at`、`failure`、`diversity-result` 写到该路径的运行库条目(`salasim-te-ext`)。**写入者只有一个线程,写的是写那一刻 PCE 持有的状态**(不是更早抓到的快照),所以晚到的写入不会把旧状态写回;与配置镜像冲突的提交重试。
+- **删除**:路径配置一删,条目立即离开 tunnel;其拆除过程在 `removals`(`removing` → `removed`,保留 `salasim.pce.lsp.retentionMs`,同名重新配置时清掉)。控制器据此区分"还在拆"与"已没有"。
+- 没做:YANG-push 订阅(P5c-2 与订阅端一起做);标准的 `computed-path-properties` 路由(ero 是简化的 leaf-list);`te/lsps` 列表。
+- 验证:`TunnelReconcilerTest`(4 个:开通与状态、备用路径分集、删除与 removals、非法配置),真实 NETCONF 服务器与 schema、记录机器调用的控制口;PCE 全套 825 通过。
+
+## P5c-2 要决定的(PNC 的角色)
+
+现在 MDSC → PNC(`add-lsp` 等 RPC 原样转给域 PCE)→ 域 PCE。配置库模型下 PNC 不能"转发 RPC",要有一份自己的 `ietf-te` 配置库并与 PCE 同步:
+
+- **A. PNC 复制器(推荐)**:MDSC 往 PNC 的 MPI 服务器写 `ietf-te` 配置;PNC 监听提交,把每个变化的 tunnel 原样写到域 PCE(edit-config,经 ODL 挂载点);PCE 的运行库状态经 YANG-push on-change 订阅回来写进 PNC 的运行库。tunnel 名与路径名两侧相同,所以是子树复制,不翻译。
+- **B. MDSC 直接写域 PCE**:违背 ACTN 分层(MDSC 不应认识域 PCE),不选。
+- 父 PCE 同样由 MDSC 直接写(现在就是 MDSC 直连父 PCE),但 P7 里它变成无状态算路服务,届时 LSP 配置面删除。
