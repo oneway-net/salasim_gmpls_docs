@@ -51,6 +51,16 @@ src/salasim_core_history/   不变(E1 之后只订阅 MDSC)
 - 任务 `testbed.deploy` / `testbed.clean`;路由 `/api/v2/testbeds`(PUT 描述、POST deploy/clean、DELETE 仅空闲时)。
 - 未验证:history 订阅的 MDSC 流地址 `/restconf/streams/json/network-facts`;`salasim/platform` 镜像尚不存在(S6 出 Dockerfile);设备(`node-<router-id>` Service)由 S4 提供。
 
+### S4 已做(2026-10-10)
+
+- `salasim_sim.scenario`:从旧包**复制**(旧包到 S6 前不动)的纯生成部分——`constellation`(Walker/TLE 几何与链路规则)、`sun_outage`、`random_link_faults`、`domain_partitioning`(含 `reference_traffic_datasets`),连同不依赖旧运行流的测试;帧时代的 `fixed_*_plan`、按帧的拓扑差分留在旧包。
+- **`scenario.compile`**:`ScenarioSpec`(Walker 星座、地面站、起止与步长、域数或显式分配、负载)→ `Compiled`:① 测试床描述(`salasim.testbed.spec.parse` 能读的 YANG 实例数据;**时间跨度内出现过的每条链路都是测试床的一条链路**,不在范围内的是载波为 down 的线缆);② **时间线**(每个端口的载波与时延随仿真时间的变化,时刻 0 先给出所有端口的真实状态,之后只有变化;小于 `delayToleranceMicroseconds` 的时延变化不下发);③ **接触计划**(每条链路的可用区间,与时间线一致);④ **负载计划**(带种子的服务提交序列,`sim.workload_item` 的形状)。确定性;`tests/sim/scenario/golden/mini.json` 是黄金摘要。默认域划分是"整轨道面按序分域";优化器(`inclined_ring_belt`)的结果可经 `assignment` 传入。地面站的接入星按"保持当前接入星直到掉出最小仰角"的策略。
+- **链路平面按设备**:`Medium`(每设备一个 `LinkPlane`),设备只读自己的 `/nodes/<router-id>/ports`(`MEDIUM_BASE_URL`),端口名就是接口号;回放的 `PortAction` 带 `node`。
+- **`salasim_sim.fleet`**:每节点一个 emulator(Deployment + Service `node-<router-id>`,环境变量与参考场景一致,NET_RAW)与一个链路平面,同命名空间、同属主标签,随测试床一起删除。
+- **平台侧**:库 `sim.scenario`(只存规格,其余由编译推出)、`ScenarioStore`、路由 `PUT/GET/DELETE /api/v2/scenarios`、`POST /api/v2/scenarios/{id}/materialize`(测试床的描述变成该场景的网络)、`POST /api/v2/testbeds/{id}/fleet`(任务 `sim.fleet.deploy`,核心 ready 之后)、`SimulationExtension`(`python -m salasim_sim api|worker`)。
+- 顺带:S6 之后的部署跟随——父 PCE 不再要配置文件与 PCEP 端口、不再限三个域,域 PCE 没有父会话的占位(`salasim.testbed.manifests`、PCE 的 `pce.sh`)。
+- 验证:`tests/sim` 79 个、`tests/plat` 56 个、`tests/pg` 41 个(含 `ScenarioStore` 与基线)全过。**未验证**:fleet 在真实集群里起得来(`salasim/platform` 镜像还没有——S6 出 Dockerfile;emulator 对 `INTERFACE_INVENTORY_FILE`/`MEDIUM_BASE_URL` 的读取只在参考场景里跑过)、大星座(1000+ 颗)的编译耗时。
+
 ## 3. 不迁移的东西(随 S6 删除)
 
 SQLite 存储(`runtime_store`、`operations`、`service_store`、`tunnel_store`、`simulation_run_store`、`pce_state_schema`、`configuration_profile_store`);对 PCE/emulator/controller run RPC 的直接调用(`agent_clients`、`pce_run_input`、`node_clock_control`、`fault_*_delivery`、`controller_client` 的 run 部分);`topology_clock_service`;`telemetry_consumer`(NATS);`v3_statistics`(统计改由 S6 的 `results` 从 `core_api_v1` 算);`/internal/pce/*`;`slice_*`、`simulation_*`、`availability_*`(窗口与可用性在 `results` 里按新模型重写)。
