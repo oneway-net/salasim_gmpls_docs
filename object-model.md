@@ -109,3 +109,48 @@ D1 是最大的一项:它把约 4000 行跨域恢复逻辑(拆分后的 `ParentR
 5. 删除父 PCE 的 LSP 持有与信令。
 
 每一步都需要单独的确认。
+
+## 8. 优化方案(2026-10-10,设计稿)
+
+依据:对象目录(§2)与对现有模块的实测——PCE 72 k 行、`computingEngine` 的 59 个文件引用 `server`/`parentPCE`;PCE 里 10 个全局单例(`TunnelUpdateEmitter.shared()` 49 处、`TunnelTelemetryRegistry` 34、`PccIdentityResolver` 20、`PendingUpdateTracker` 15…);控制器 `mdsc` 对 `pnc.abstraction` 有 8 处依赖;backend 的 `salasim_backend` 仍是 100 多个扁平模块。
+
+### 8.1 对象设计
+
+| # | 优化 | 现在 | 目标 | 收益 |
+|---|---|---|---|---|
+| O1 | **意图与状态分开(spec/status)**,每类对象一个对账器 | Tunnel、重试、告警、保护的状态散在 `ProtectionManager` 与多张表 | `spec`(调用方意图,只读)与 `status`(对账器根据事实写)分列;一个对象类型一个对账循环,重试、截止时刻、告警都是对账器的输出 | 重试、告警、幂等重放有统一位置;符合"真实管控系统" |
+| O2 | **类型化标识** | LSP 名是字符串,PCE 内部在最后一个 `/` 处拆 | `ServiceId`、`TunnelId`、`LspName`(只解析一次)、`DomainId`、`NodeId`、`LinkId`、`DirectedLink` 值对象 | 去掉字符串拆分与键不一致的一类错误 |
+| O3 | **LSP 代际一等公民** | 过期判断有三套:运行代际围栏、ERO 修订号、attempt id | `LspRef(name, generation)`;提交、确认、事实都带代际,过期统一为代际比较 | 一套机制代替三套;D1 后控制器与 PCE 对齐 |
+| O4 | **跨域 Tunnel 做成组合对象** | "部分成功"隐含在待清理记录里 | `Segment{domain, lsp, state}`;状态 PLANNED→BREAKING→MAKING→UP / PARTIAL / FAILED,显式存 `intent.tunnel_segment` | D1 的核心;部分状态可查询、可对账、可重启恢复 |
+| O5 | **Path 不可变值对象;事实名与状态机同名** | ERO 与指标随处传递、可变 | `Path` 不可变(ERO、指标、计算所用拓扑版本);事实 kind 直接对应状态转换 | 事实重放得到同一状态;历史表更简单 |
+| O6 | **Link 唯一标识** | `physicalLinkId`、`faultTargetId`、有向边、跨域键并存,靠 `LinkIdentityRegistry` 翻译 | 设备侧给出 `LinkId`;TE 链路只是 `(LinkId, 方向)` 的投影 | 删除翻译层,故障注入与算路用同一个键 |
+
+**与已做选择的关系**:保护组不新增对象(D2),所以 O1 的对账器放在 `ProtectionManager` 内部,不改 `intent.protection` 的形状。
+
+### 8.2 模块设计
+
+| # | 优化 | 现在 | 目标 | 收益 |
+|---|---|---|---|---|
+| M1 | **消除隐藏所有者** | 约 10 个全局单例(`shared()`/`INSTANCE`)被几百处直接调用 | 每个单例对应 §2 里的一个对象所有者,放进 `PceContext`,构造注入:`TunnelUpdateEmitter`→事实发布者;`PccIdentityResolver`→会话注册表;`PendingUpdateTracker`→信令事务表;`TunnelTelemetryRegistry`→并入事实或删除 | 所有权可读;测试不再靠重置单例 |
+| M2 | **PCE 按依赖方向分模块** | `computingEngine` 依赖 `server`/`parentPCE`(59 个文件),算路与信令纠缠 | Maven 模块:`pce-compute`(纯函数:TED 快照+约束→候选,无 I/O)、`pce-state`(TED、LSP-DB、会话)、`pce-signaling`(PCEP、PCInitiate、PCUpd)、`pce-mgmt`(NETCONF)、`pce-app`(装配);依赖只能从上往下 | F2 的存量违规清零;算路可独立压测;D1 后父 PCE 只依赖 `pce-compute` |
+| M3 | **控制器的 MDSC 与 PNC 解耦** | `mdsc` 直接引用 `pnc.abstraction` 的 8 个类 | 抽出共享的 `te-topology` 模块(编解码、`TopologyVersion`);MDSC 与 PNC 只经它和 NETCONF 通信 | PNC 可以独立部署;MDSC 不知道 PNC 的内部类 |
+| M4 | **Backend 按三包重组并先删死模块** | `salasim_backend` 扁平 100+ 模块,含已无用的 `agent_clients`(PCE/emulator 部分)、`pce_run_input`、`node_clock_control`、`simulation_clock` 等 | 按 §4.2 的 `salasim/`、`salasim_core_history/`、`salasim_sim/`;先删死模块,再迁移 | R6 的前置清理;模块数量减半 |
+| M5 | **算法按枚举/注册表选择** | 算法按类名字符串从配置加载(`MPLS_CrossSnapshot_Algorithm` 是 backend 的契约) | 目标函数枚举 → 算法注册表;配置里只写目标函数 | 去掉类名契约与 F4 豁免;新算法不改 backend |
+| M6 | **契约单源:YANG** | Java 里手工钉修订(`YangRevisionPinsTest`),Python 另写一份字段名 | 事实与 RPC 的字段名、修订号由 YANG 生成常量(Java、Python 各一份生成物) | 改契约时两边同时编译失败,而不是运行时才发现 |
+
+### 8.3 排序与依赖
+
+```
+O2(类型化标识) ──┬─▶ O3(代际)──▶ O4(跨域段对象)──▶ D1 迁移
+                 └─▶ M1(去单例)──▶ M2(PCE 分模块)
+O6(Link 标识)────────────────────▶ M2
+M3、M4、M5、M6:相互独立,可穿插
+```
+
+建议顺序:**M1 → O2 → M2 → O3/O4(随 D1)→ M3 → M5/M6 → M4(随 R6)**。理由:M1、O2 是机械的、可逐文件验证的,先做能让后面的拆分有干净的接缝;M2 依赖 M1 的显式装配;O3/O4 要在 D1 的迁移里一起落地,否则会设计两次。
+
+### 8.4 不做的事
+
+- 不新增保护组对象(D2)。
+- 不动 `protocols`、`topology` 两个底层库的 WSON 部分(保留 WSON 的既定决定)。
+- 不在 D1 之前拆 `ParentMdLspReroute` 剩下的四块——它们会随 D1 整体迁走。
