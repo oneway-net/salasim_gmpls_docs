@@ -59,7 +59,7 @@ src/salasim_core_history/   不变(E1 之后只订阅 MDSC)
 - **`salasim_sim.fleet`**:每节点一个 emulator(Deployment + Service `node-<router-id>`,环境变量与参考场景一致,NET_RAW)与一个链路平面,同命名空间、同属主标签,随测试床一起删除。
 - **平台侧**:库 `sim.scenario`(只存规格,其余由编译推出)、`ScenarioStore`、路由 `PUT/GET/DELETE /api/v2/scenarios`、`POST /api/v2/scenarios/{id}/materialize`(测试床的描述变成该场景的网络)、`POST /api/v2/testbeds/{id}/fleet`(任务 `sim.fleet.deploy`,核心 ready 之后)、`SimulationExtension`(`python -m salasim_sim api|worker`)。
 - 顺带:S6 之后的部署跟随——父 PCE 不再要配置文件与 PCEP 端口、不再限三个域,域 PCE 没有父会话的占位(`salasim.testbed.manifests`、PCE 的 `pce.sh`)。
-- 验证:`tests/sim` 79 个、`tests/plat` 56 个、`tests/pg` 41 个(含 `ScenarioStore` 与基线)全过。**未验证**:fleet 在真实集群里起得来(`salasim/platform` 镜像还没有——S6 出 Dockerfile;emulator 对 `INTERFACE_INVENTORY_FILE`/`MEDIUM_BASE_URL` 的读取只在参考场景里跑过)、大星座(1000+ 颗)的编译耗时。
+- 验证:`tests/sim` 85 个、`tests/plat` 50 个、`tests/pg` 41 个(含 `ScenarioStore` 与基线)全过。**未验证**:fleet 在真实集群里起得来(`salasim/platform` 镜像还没有——S6 出 Dockerfile;emulator 对 `INTERFACE_INVENTORY_FILE`/`MEDIUM_BASE_URL` 的读取只在参考场景里跑过)、大星座(1000+ 颗)的编译耗时。
 
 ## 3. 不迁移的东西(随 S6 删除)
 
