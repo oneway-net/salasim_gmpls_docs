@@ -272,3 +272,9 @@ gNMI 订阅路径用 IETF YANG:`ietf-interfaces` `/interfaces/interface/statisti
 - P2(进行中,2026-10-10):
   - 已做:`ietf-te@2024-02-02`、`ietf-te-types@2026-06-11`、`ietf-te-packet-types@2026-06-11`(草案修订)与 `ietf-alarms@2022-06-06` 入库,RFC 的 `ietf-te-types@2020-06-10` 移除(一个模块只能有一个修订);各组件的文件名与 Java 绑定包(`rev260611`)已跟进;5 个仿真模块移到 `salasim-sim/`,作为同一制品的 `sim` 分类器 jar,核心 jar 不再含仿真模块;`sat-topology` 前缀冲突修复;netconf 库增加 `AllModulesLoadTest`(整套模块在生产解析器里一起加载);`ietf-te` 适配分析见 `ietf-te-fit-2026-10-10.md`。
   - 推迟到 P5(与模块集合一起一次完成,避免两次改包名):`salasim-te-ext`、`salasim-types` 合并 typedef、全部 salasim 模块收敛为单一新修订、Java 常量与 Python 类型由 YANG 生成、README 与 module-classes 由脚本生成;fencing epoch 叶子随 te-ext。
+
+- P4(2026-10-10,停在 P4a + P4b-1):
+  - 已做 P4a:域 PCE 重算 worker 有活即唤醒(批处理窗口 50 ms,原为固定 500 ms);子 PCE 的断路上报立刻唤醒父 PCE 的维护(原最多 10 s);MDSC 在链路/边界端口恢复时,经 500 ms 防抖立刻为 down/failed 的腿重试(不占"放弃"次数,退避保留为兜底)。恢复归属:域内断路由域 PCE 重算一次,控制器的重试经 `recomputeLsp` 不再并发重复。
+  - 已做 P4b-1:PNC 的 MPI 提供本域 native 网络 `salasim:<domain>/native` 及实时 oper-status(`NativeNetworkService`),变化经现有 YANG-push 发布;MDSC 忽略 native 网络。
+  - 核对后不做:域 PCE 的 TED 增量化(整图复制 + 原子快照替换,读者无锁,规模下代价可忽略);父 PCE 的 JSON 重载(随 P7 重做);"PCRpt DOWN 自足"(PCRpt 不带失败的是哪一跳)。
+  - 未做(用户决定暂停):P4b-2 域 PCE 订阅 PNC 的 native 网络(需要 netconf 库里的 NETCONF 客户端,选定用 ODL `netconf-client`;实现时两次被安全分类器拦下,未提交任何代码),P4b-3 删除 `report-link-state` 推送链(`PncLinkState` 到 PCE 的 ReportQueue、`ActualLinkStateReporter` 的 generation、PCE 的 `report-link-state` RPC),以及测试床清单里 PCE→PNC 的地址与凭据。现有 PNC→PCE 推送链保持原样工作。
