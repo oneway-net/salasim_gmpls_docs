@@ -197,3 +197,26 @@ MDSC 把"源端点 → 边界"、中转域的抽象链路、"边界 → 宿端�
 - 父 PCE 进程并入 controller(逻辑归属已定为 MDSC,进程合并以后再说)。
 - 跨域受保护业务(S4 之后另行设计)。
 - 把 PNC 做成真正的翻译层,以及 MPI 迁到 `ietf-te` 标准模型(目前仍是自定义的 `salasim-service`)。
+
+
+## 10. P7 S1 的结果与对 v4 的修正(2026-10-10,本地)
+
+本文是 2026-10-09 的设计;system-design-v4 之后做了这些调整,S1 按调整后的形态实现:
+
+- **MPI 已经是 `ietf-te`**(P5c/P5d):§5.3 的"段的开通"不再是 `salasim-service:create-services`,而是往 PNC 写一条 ietf-te tunnel(`TunnelTrees`/`LspTunnelPort` 已经做完,PNC 复制器把它交给域 PCE)。段 = 一条 tunnel,源/宿是该域内的路由器 id。
+- **父 PCE 是无状态函数,端点代价由 MDSC 带给它**:§5.2 的"按需查询"由 MDSC 先向源域、宿域的 PNC 问 `segment-costs`,再把结果放进 `compute-cross-domain-paths` 的输入。父 PCE 不问任何人,不记任何东西(这比"父 PCE 去问 PNC"少一个依赖,也便于测试)。
+- **新模块 `salasim-path-compute`**(两个 RPC,而不是塞进 te-ext 或标准 `tunnels-path-compute`):标准 RPC 是"同一拓扑里两点之间一条路",表达不了"一个端点对多个边界节点"和"端点不在被计算的网络里"。
+  - `segment-costs`:PNC(转给域 PCE)——输入端点、方向(from-endpoint / to-endpoint)、带宽、度量、边界节点列表;输出每个**可达**边界节点的代价(时延微秒或跳数)与路径上最窄的可用带宽。
+  - `compute-cross-domain-paths`:父 PCE——输入源、宿、带宽、度量、k、源侧与宿侧的端点代价、排除的链路/节点;输出 k 条路径,每条是按域切分的段(domain、ingress、egress、cost)与它们之间的域间链路。
+
+S1 已实现(PCE 827 个测试、控制器 241 个、适应度函数全绿):
+
+| 部分 | 位置 | 说明 |
+|---|---|---|
+| 跨域选路 | `net.salasim.pce.parent.CrossDomainPathComputer` | 组合拓扑(边界节点 + 域间链路 + PNC 抽象链路)加源/宿虚拟端点,jgrapht Yen k 最短简单路径(多重图,所以并行的域间链路给出不同候选);过滤:链路 down、带宽不够、排除项。度量:时延(微秒,缺省 1000)或跳数(组合网络只有时延,抽象链路在跳数度量下算一跳,端点代价按所问度量给) |
+| 域内段代价 | `es.tid.pce.computingEngine.algorithms.mpls.SegmentCosts` | 对每个边界节点用现有 `MplsPathComputation`(同一套带宽规则与目标函数),取路径的代价和最窄带宽;不可达的省略;端点即边界节点 = 0 |
+| NETCONF | 父 PCE `compute-cross-domain-paths`、域 PCE `segment-costs`、PNC `segment-costs`(原样转给域 PCE,PCE 不在线 = 错误) | |
+
+**还没有**:MDSC 侧的使用(S2:`CrossDomainOrchestrator`:先问两个 PNC、再问父 PCE、逐段经 PNC 建 tunnel、失败回滚与换候选)。现有的跨域开通路径(`ParentMdLspInitiateService` 经 PCInitiate)原样保留,没有改。**没有验证**:参考场景(n1→n5 应得到 n1 n2 n3 n4 n5)——`compute-cross-domain-paths` 与现有 `initiate` 选的路径是否一致,要在场景里比;本机只有单元测试。
+
+剩余阶段不变:S2 开通/删除、S3 域间带宽记账、S4 响应式恢复(先列出 `ParentMdLspReroute` 的顺序/并发约束)、S5 预计算出计划、S6 删除父 PCE 的有状态部分。每一步都比 S1 大一个数量级,且依赖参考场景在测试机上跑通,建议逐步确认。
