@@ -266,3 +266,39 @@ MDSC 自己把**不受保护的跨域业务**铺过各域(参考场景的 svc-1,
 - 不在范围:受保护的跨域业务;**拆与建之间的带宽占位**仍然没有(设计里的先拆后建不占位——域间链路这一段从替换开始就不再记旧路由,新路由的预留在存下路由时就记上,所以域间链路上这一窗口是安全的;域内段的带宽仍由各域 PCE 在拆后释放,窗口里别的业务可能占走域内容量,新段因此失败走 crankback)。
 
 验证:`CrossDomainTunnelPortTest` 35 个(新增 7 个:放不下就避开重搜、都不行就 failed、放得下的共用链路、双向业务需要反向、拆除确认前不释放确认后释放、重启后账不丢、替换会超额就不换),`JdbcCrossDomainRoutesTest`,数据库冒烟与 47 个变异用例全部被抓住;控制器 284 个通过(41 个需要数据库/端口而跳过)。**没在真实环境验证**:各域间链路的容量字段(端口 `max-bandwidth` 的单位:模型是字节/秒,代码按此乘 8)是否与实际场景一致。
+
+
+## 14. P7 S5 的结果(2026-10-10,本地)
+
+### 14.1 开工前的发现:没有可"保留"的预计算
+
+§4 假设父 PCE 里有一套"预计算出计划"的东西可以留下。读代码后:
+
+- `ContactPlan`/`PlanReconciler`(`net.salasim.pce.plan`)只有类、测试和 YANG;**生产代码里没有任何地方安装计划**,`PlanReconciler` 在空转。
+- 旧的跨快照算路(`ParentRouteSearch` 的 `ReactiveCandidateWindow`/lookahead、`MPLS_CrossSnapshot_*`)的未来拓扑,是 **backend 经 HTTP 上传给 PCE 的仿真快照**(用户确认)。这条上传通道在 PCE 一侧已不存在;而且"帧/快照"是仿真概念,与"核心不感知仿真"相悖。该算路还与对子 PCE 的实时 PCReq 绑在一起,S6 删除父 PCE 的 PCEP 后无法存活。
+
+结论:S5 不是"保留",是**按 `ContactPlan`(IETF TVR 时间表的内存形式,预测、不是事实,决定 D9)重建**。计划的写入者是平台(仿真模块把每帧的链路可用性转成 TVR 时间表),不在核心里。
+
+### 14.2 与 §4 不同的两处设计(都是读代码后简化的)
+
+1. **MDSC 拉取,不是父 PCE 推送 `path-change-recommended`**。父 PCE 到 MDSC 现在没有任何订阅通道;计划是确定的、随时可重新读出,拉取不怕丢通知(与 v4"通知丢状态后再查"一致);父 PCE 因此**不需要登记路由**,保持无状态(E3)。
+2. **父 PCE 只提供计划,不算计划里的路径**。新增 RPC `planned-link-changes(from, until)`(`salasim-path-compute`):窗口内计划预测的域间链路可用性变化(物理链路 id、时刻、变成什么)。MDSC 拿到"哪些链路即将被拿走",把它们(两个方向)作为排除项,**复用 S1 已有的 `compute-cross-domain-paths`** 找绕开的路由——不需要 `at` 参数,也不需要父 PCE 保存任何业务。
+
+### 14.3 做了什么
+
+- **父 PCE**:`ParentTopologyService.installPlan/plan/plannedChanges`(版本必须上升;计划只被查询,从不改拓扑);RPC 经 `PceControlPort.plannedLinkChanges` → `PathComputeRpcs.plannedLinkChanges` 注册在父 PCE 的 NETCONF 上。**写入计划的一侧只留 Java 接口 `installPlan(ContactPlan)`**:平台往里写的 RPC/数据存储尚未做(D9 里的 TVR 数据存储形式也没做)。
+- **MDSC**(`CrossDomainTunnelPort.planAhead(horizon)`):定时器(`salasim.mdsc.planPollSeconds`,默认 10,0 关闭;`planHorizonSeconds` 默认 60)问父 PCE 窗口内的计划;凡 `ESTABLISHING` 且跨过将被拿走的链路的路由被标记并通知经理去读;读到时(路由全段 active)搜一条避开计划丢失链路的路由(与恢复同样的节流:同路由一个搜索、间隔 10 s、全局 8 个)。
+- **先建后拆**(新状态 `MOVING`):旧路由继续承载并是对经理报告的状态;新路由独有的段写在旁边(两条路由共用的段不动);域间链路带宽对两条路由都占着。新段**全部 active 且新路由的链路都 up** → 新路由成为路由,旧独有段进 `retiring`(此时 `ESTABLISHING` 也允许带 `retiring`,表示"待拆")并被逐次拆除,拆净后忘掉;新段失败、新链路实际不通(**计划预测错了,以设备上报为准**)、或 120 s 内没起来 → 放弃:拆新段,旧路由仍是路由,失败处计入下次搜索的排除项。搜不到、容量放不下都不动。
+- **持久化**:`intent.cross_domain_route` 加 `next`/`next_links` 与 `moving` 状态,约束:`moving` ⇔ 有 `next`;`retiring` 只许在 `recovering`/`establishing`。重启后 `MOVING` 读回继续。
+- 删除一条正在移动的路由会拆旧段、新段、待拆段。
+
+### 14.4 验证与没做的
+
+`CrossDomainTunnelPortTest` 44 个(新增 9:窗口与只读相关路由、完整先建后拆次序与带宽双占、重启接着走、新段失败放弃并记入排除、超时放弃、计划错了放弃、搜不到/放不下不动、删除移动中的路由、计划读不到不算错误)、`PathComputeTreesTest`、`JdbcCrossDomainRoutesTest`(含 MOVING 往返与"已移动"状态,在 Postgres 上跑过)、PCE 的 `PathComputeRpcsTest`/`ParentTopologyServiceTest`;控制器 295(42 跳过)、PCE 831、适应度全绿、数据库变异 49 个用例。
+
+**没做**:
+- 平台把仿真帧转成 `ContactPlan` 并写入父 PCE(backend/R6 的范围);没有计划写入者就没有端到端效果,参考场景也就没有 S5 的步骤。
+- 只处理"链路即将被拿走"。链路将"出现"带来的更优路径不主动换(旧跨快照算路会按窗口比较两个方向);域内抽象链路没有物理链路 id,不在计划里。
+- 计划与实际偏差(`PlanReconciler` 的 early/late/missing)还没接到 MDSC:偏差只通过"新链路实际 up 才切换"和"丢失链路仍由响应式恢复兜底"间接处理。
+- 先建后拆在域内容量紧时,新段可能因容量不足失败(放弃移动,旧路由保持);没有为 MBB 期间预占域内带宽。
+- 未在真实环境验证(同 S1–S4)。
