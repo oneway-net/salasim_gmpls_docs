@@ -81,3 +81,13 @@ PCE(域与父,同一套)在原有 `salasim-pce-lsp` RPC 之外同时服务 `ietf
 - 参考场景 `check.sh` 的 `heard()` 以前 grep `lsp state: ... is ...`(通知),现在 grep MDSC 新增的日志 `tunnel state: <service>/<leg> is <state>`(`ProtectionManager` 读回状态且状态变了时记)。**参考场景脚本本身没有在机器上跑过**。
 - 测试:控制器 244(37 个需要数据库/端口跳过),PCE 813,netconf 全绿。数字比 P5c-2 报告少 12,是因为那一次没有 `clean`,target 里还留着已删除测试的旧 class。
 - 还留着 `salasim_gmpls_model` 不在任何 git 仓库里(`LspName` 注释的改动只在工作区)。
+
+## P5d 结果(2026-10-10,本地)
+
+- **CMI = `ietf-te`**:客户端往 MDSC 自己的配置库(RESTCONF `PUT/PATCH /restconf/data/ietf-te:te/tunnels/...`)写一条 tunnel,业务号 = tunnel 名;一条 primary-path,可选一条 secondary-path(= 受保护业务)。`TunnelIntent` 解析、`TunnelTrees.service(spec)` 反向生成,往返相等(有测试)。含义:源/宿 `te-node-id`;`te-bandwidth/generic` 字节/秒(×8 得 bit/s);主路径 `optimizations` 的度量按 `weight` 大者先(同权重被拒)、`k-requested-paths`;备用路径的 `disjointness`(srlg > node > link,缺省 link);`protection/protection-type` 1-for-n = 共享备用否则专用,`protection-reversion-disable`、`hold-off-time`、`wait-to-revert` 是切换策略(没有 `protection` 容器 = 不回切);`salasim-te-ext:protection-policy/degraded-standby`。
+- **`TunnelService`**:监听配置库的 `te/tunnels`(`DOMDataBroker.DataTreeChangeExtension`),新增/变化的 tunnel → `ProtectionManager.admit`,删除的 → `delete`;管理器每次读到状态就写回运行库:路径 `lifecycle-state`/`failure`/`diversity-result`、主路径 `active`、tunnel 的 `operational-state`(选中的那条路径 active = up;全部 down/failed/removed = down;其余不写)。删除的拆除过程在 `removals`(`removing` → `removed`)。管理器重启后从数据库载入的业务由 `restore()` 写回配置库,所以树上看得到。
+- **行为变化(与 P5c-2 同样的取舍)**:拒绝不再是写入的应答,而是主路径的 `failed` + `failure`(类型:`service-request-invalid`、`controller-unknown-endpoint`、`controller-pnc-unavailable`、`service-request-conflict` …)。同名不同内容 = 冲突(显示在 tunnel 上,在跑的业务保持原样,要改就删了重建)。批量 = 一次提交里的多条 tunnel,各自处理;没有分页与按状态过滤(RESTCONF 的 GET 就是读树)。`wait=outcome` 没有了:调用方轮询状态。
+- **删除**:`salasim-service-fleet`、`salasim-service-types`、`ServiceProvisioningRpcs`、`RefusedEntry`、旧的 `ServiceManagementTest`(替换为 `TunnelServiceTest`,16 个)。`ProtectionManager.observer()` 现在是叠加(多个观察者互不影响);`View` 带上两条腿的失败类型。
+- **参考场景**:`check.sh` 改成 `PUT/DELETE/GET ietf-te` 与 `removals`,去掉了检查"路由到哪个 owner/PCE"的步骤(ietf-te 没有这个叶子)。**没有在机器上跑过**。
+- **验证**:控制器 240 个(37 个需要数据库/端口跳过),PCE 813,netconf 59。**没有在本机验证的**:真实 lighty RESTCONF 对 `ietf-te` 的读写(类型转换、`PUT` 创建列表项)、`DataTreeChangeExtension` 在 lighty 的分布式数据库上的监听、配置库与运行库在 RESTCONF GET 里的合并呈现(依赖 lighty 默认 `content=all`)。
+- **没做**:平台侧的客户端(P5e)——新的 `salasim` 平台代码目前不调用 MDSC;旧 `salasim_backend` 里的 fleet 调用随它整体删除(R6)。
