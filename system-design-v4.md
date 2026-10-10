@@ -285,3 +285,5 @@ gNMI 订阅路径用 IETF YANG:`ietf-interfaces` `/interfaces/interface/statisti
   - 推迟:库改名 mdsc-db;PCE 事实的 MDSC 自有 `tunnel-state`(E1)与 PCE 事实瘦身(E2);平台 `results.*` 与 ClickHouse 上的分析(P8/S6);`history.lsp_*` 之外的 link-oper-change 等无来源事件。
 
 - P5a/P5b(2026-10-10,本地):`salasim-te-ext`;MDSC 告警改为标准 `ietf-alarms`(详见 docs/p5-standard-models-plan.md)。批量语义已由用户确认:一次提交原子,逐条自己拆;度量优先 = weight 大者先。P5c 起等用户点头。
+
+- P5(2026-10-10,本地)完成:P5a te-ext、P5b 告警、P5c 域/父 PCE 与 PNC 复制器、P5d MDSC CMI、P5f 单一 revision 与生成;P5e(平台客户端)无事可做(新平台代码还不调用 MDSC),并入以后的平台工作。详见 docs/p5-standard-models-plan.md。

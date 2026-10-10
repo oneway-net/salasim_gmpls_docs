@@ -91,3 +91,12 @@ PCE(域与父,同一套)在原有 `salasim-pce-lsp` RPC 之外同时服务 `ietf
 - **参考场景**:`check.sh` 改成 `PUT/DELETE/GET ietf-te` 与 `removals`,去掉了检查"路由到哪个 owner/PCE"的步骤(ietf-te 没有这个叶子)。**没有在机器上跑过**。
 - **验证**:控制器 240 个(37 个需要数据库/端口跳过),PCE 813,netconf 59。**没有在本机验证的**:真实 lighty RESTCONF 对 `ietf-te` 的读写(类型转换、`PUT` 创建列表项)、`DataTreeChangeExtension` 在 lighty 的分布式数据库上的监听、配置库与运行库在 RESTCONF GET 里的合并呈现(依赖 lighty 默认 `content=all`)。
 - **没做**:平台侧的客户端(P5e)——新的 `salasim` 平台代码目前不调用 MDSC;旧 `salasim_backend` 里的 fleet 调用随它整体删除(R6)。
+
+## P5f 结果(2026-10-10,本地)
+
+- **单一 revision**:13 个 salasim 模块(`salasim/` 8 个、`salasim-sim/` 5 个)统一为 `2026-10-10`,旧 revision 链不再保留(`salasim-fact` 原来的三条、其余的 `2026-10-06/08` 都删了),此后每次变更照 RFC 7950 §11 加更新的 revision。Java 绑定包(`...actn.rev261010`、`...link.state.rev261010`)、NETCONF/RESTCONF 的 `module@revision` 字符串、实例数据与 golden 文件、测试常量、平台的测试床清单一并改过(控制器 42 个文件)。
+- **生成**:`tools/generate-module-artifacts.py` 从 YANG 生成 `module-classes.txt`(`salasim/` = core、`salasim-sim/` = sim,`neutralize` 类不再有)、README 里的模块表、`net.salasim.yang.SalasimModules`(Java 命名空间/revision 常量)、`python/salasim_modules.py`;`--check` 放进了 `validate.sh`。PCE 与控制器里 te-ext、alarm-types、link-state 的 QName 常量改用 `SalasimModules`,所以不会再写出工件里没有的 revision;`SalasimModulesTest` 把常量与工件清单对一遍。
+- **没做**:Python 的 pydantic 模型(`generate-python.sh` 原来就只能生成两个模块,`anydata`、RPC 都不支持);没有把后端的 Python 代码改成导入 `salasim_modules.py`(两个仓库的包边界要先定);ietf 模块的 revision 常量(`ietf-te@2024-02-02` 等)仍手写,有 `YangRevisionPinsTest` 守着。
+- **顺带修了**:适应度函数 F7(时间只经注入的时钟)被 P5b–P5d 新写的 7 处 `Instant.now()`/`System.currentTimeMillis()` 弄红了:`AlarmList`、`TunnelService`、`LspTunnelPort` 现在收一个 `java.time.Clock`,PCE 的 `TunnelStates` 收 `net.salasim.pce.model.Clock`。`docs/tools/fitness` 现在全绿。
+- **留着的旧东西**:旧后端 `salasim_backend`(R6 整体删除)里的 `native_schedule.py`、`controller_sidecar.py`、默认配置 JSON 还写着旧 revision(`salasim-actn@2026-10-06` 等),它们生成的清单控制器已读不了;不在 P5f 里改,随旧后端一起删。
+- 验证:yang 工件、netconf 59、控制器 239(37 个跳过)、PCE 813、emulator 89、平台 `tests/plat` 50 都通过;AlarmListTest 等需要 Postgres 的测试这次没重跑(只改了构造函数参数,可编译)。
