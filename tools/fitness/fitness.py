@@ -342,8 +342,45 @@ def check_f10() -> list[Violation]:
     return []  # fact emitters move to salasim-fact in P3; this becomes the payload contract test then
 
 
+# ---------------------------------------------------------------- F11 PCE package layering (P6: the modules to come)
+
+# a package may import its own layer and the ones below; the order is the module split of docs/system-design-v4.md 1.4:
+# model/lsp/util (shared) < compute < domain (server) and H-PCE (parentPCE), siblings < planning, HTTP < application, mgmt
+PCE_LAYERS = [
+    ("net.salasim.pce.model", 0), ("net.salasim.pce.recovery", 0), ("net.salasim.pce.lsp", 0), ("es.tid.pce.util", 0),
+    ("es.tid.pce.ospf", 0), ("es.tid.pce.management", 0),
+    ("es.tid.pce.computingEngine", 1),
+    ("es.tid.pce.server", 2), ("es.tid.pce.parentPCE", 2),
+    ("net.salasim.pce.plan", 3), ("net.salasim.pce.parent", 3), ("es.tid.pce.http", 3),
+    ("net.salasim.pce.app", 4), ("es.tid.pce.mgmt", 4),
+]
+
+
+def pce_layer(name: str) -> tuple[str, int] | None:
+    for prefix, layer in PCE_LAYERS:
+        if name == prefix or name.startswith(prefix + "."):
+            return prefix, layer
+    return None
+
+
+def check_f11() -> list[Violation]:
+    """An import of a higher PCE layer from a lower one: one count per import line."""
+    out: list[Violation] = []
+    for p in java_sources("salasim_gmpls_pce"):
+        pkg = re.search(r"^package\s+([\w.]+);", p.read_text(errors="replace"), re.M)
+        mine = pce_layer(pkg.group(1)) if pkg else None
+        if mine is None:
+            continue
+        for lineno, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+            m = re.match(r"import\s+(?:static\s+)?([\w.]+);", line)
+            theirs = pce_layer(m.group(1)) if m else None
+            if theirs and theirs[1] > mine[1]:
+                out.append((f"F11/{mine[0]}", f"{rel(p)}:{lineno}: {mine[0]} (layer {mine[1]}) imports {theirs[0]} (layer {theirs[1]})"))
+    return out
+
+
 CHECKS = {"F1": check_f1, "F2": check_f2, "F3": check_f3, "F4": check_f4, "F5": check_f5, "F6": check_f6,
-          "F7": check_f7, "F8": check_f8, "F9": check_f9, "F10": check_f10}
+          "F7": check_f7, "F8": check_f8, "F9": check_f9, "F10": check_f10, "F11": check_f11}
 
 
 def main() -> int:
