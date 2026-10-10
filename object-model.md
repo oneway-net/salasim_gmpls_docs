@@ -164,3 +164,75 @@ M3、M4、M5、M6:相互独立,可穿插
   - **未动**:backend 的旧 run 流程(`topology_clock_service`、`scenario_compiler` 里的 `endToEndReuse` 键)仍会发送这个字段,但 PCE 已不接收;随 R6 删除。
   - 单例清单(§8.1 的 M1)少了一项:`EndToEndLspReuseRegistry.shared()` 的 33 处调用已消失。
 - **O1 暂缓**(用户:"太重"):不引入对账器与 spec/status 拆分;重试、告警、截止时刻继续按现状放在 `ProtectionManager` 与 `intent.*` 里。
+
+## 10. 第二轮面向对象优化(2026-10-10,设计稿)
+
+第一轮(§8)主要是"谁拥有什么"。这一轮看**对象内部**:行为是否放在拥有数据的对象上。实测发现的问题集中在四类。
+
+### 10.1 发现
+
+| 症状 | 证据 | 本质 |
+|---|---|---|
+| **贫血实体** | `MD_LSP` 36 个方法几乎都是 getter/setter;路径(`setFullERO`、段表 `getDomainLSPIDMap().put/clear`)被 6 个类直接改:`PathRebuild`、`ParentMdLspReroute`、`InterDomainLspInitiateHelper`、`DomainPCEServer`、`IniProcessorThread`、`SingleDomainIniProcessorThread` | LSP 的不变量(代际、ERO 修订、段与路径一致)没有守门人,散在调用方 |
+| **静态过程类代替对象** | `ParentMplsBandwidthUpdater` 39 个静态方法、`ParentMplsAdmissionCoordinator` 22、`InterDomainLspInitiateHelper` 23、`TunnelUpdateEmitter` 33;状态藏在 `PceProcess.context().state(...)` 里 | 带宽账本、预留、信令是对象,却写成了"函数 + 隐藏全局状态" |
+| **同一概念多处实现** | LSP 名在 4 处按 `/` 拆分(`LspNames`、`ServiceProvisioner`、控制器 `LspStateEvent`、`NetworkPushDecoder`);"一次信令操作"分散在 `PendingUpdateTracker`、`SignalingOperationTelemetry`、`TunnelUpdateEmitter` 的 open operations、`openRerouteAttempts` 四处 | 缺值对象和"操作"对象 |
+| **上帝类** | `DomainPCEServer` 1956 行(PCEP 服务 + 反应式恢复 worker + PCUpd 派发)、`ChildPCERequestManager` 1876、`ProtectionManager` 772(业务、两条腿、重试、计时器、持久化、等待者) | 多个职责挤在一个类里,`ProtectedService` 的字段被管理器直接读写 |
+
+### 10.2 关键判断:先优化"D1 之后还存在的对象"
+
+D1 已定:跨域由 MDSC 缝合,父 PCE 只算路。因此 `ParentMdLspReroute`、`ParentMdLspInitiateService`、`PathRebuild`、`MultiDomainLSPDB`、`ParentMplsBandwidthUpdater` 的父侧部分、`ChildPCERequestManager` 的 PCInitiate 路径**都会迁走或删除**——现在给它们做面向对象重构是白做。本轮只动三处会长期存在的地方:**域 PCE、控制器、两者共享的值对象**。
+
+### 10.3 目标对象(按所在组件)
+
+**共享值对象(新模块 `salasim-model`,无依赖,PCE 与控制器共用)**
+
+| 对象 | 内容 | 替代 |
+|---|---|---|
+| `LspName` | `service`、`tunnel`;`parse` 只在这里 | 4 处字符串拆分 |
+| `LspRef` | `LspName` + `generation` | 三套过期判断(运行代际、ERO 修订、attempt id),即 §8 的 O3 |
+| `Path` | 不可变:跳列表、指标、计算所依据的拓扑版本 | 可变 ERO 四处传递 |
+| `DirectedLink`、`LinkId` | 有向 TE 链路与物理链路 | 字符串拼接的链路键 |
+| `Bandwidth` | 带单位的值 | `long bps` 与 PCEP `Bandwidth` 对象混用 |
+
+**域 PCE**
+
+| 对象 | 职责(行为在它身上) | 从哪里来 |
+|---|---|---|
+| `DomainLsp`(实体,聚合根) | `report(PCRpt)` 更新状态;`replacePath(Path)` 发起替换并返回 `SignalingTransaction`;`confirm(txn)`;`down()`;守住代际与路径一致 | `SD_LSP`(加行为)+ 散在 6 个类里的 `setFullERO` |
+| `LspDatabase`(仓库) | 按 `LspName` 与 `(PCC, PLSP-ID)` 查找;只增删,不替调用方改字段 | `SingleDomainLSPDB` + `ReportDB_Handler` 的查找部分 |
+| `BandwidthLedger` | `hold(path, bw) → Reservation`;`Reservation.confirm()`、`release()`;链路占用只能经它变化 | `MplsOccupancyStore`、`LspResourceIndex` 的占用部分、域侧的带宽更新 |
+| `Reservation` | 状态 HELD → CONFIRMED → RELEASED,幂等 | 按字符串键的 pending map |
+| `SignalingTransaction` | SRP-ID、`LspRef`、期望路径、截止时刻、结果 future;超时与确认都在这里结算 | `PendingUpdateTracker` 条目 + `SignalingOperationTelemetry` + open operations |
+| `ReactiveRecovery` | 受影响 LSP → 每个一次 `replacePath`;不排期、不重试 | `DomainPCEServer.ReactiveRecomputeWorker` 及周边 |
+| `FactPublisher` | 把对象的状态转换写成事实;只格式化与发送 | `TunnelUpdateEmitter` 的发射部分(运营统计部分随"统计类"清理) |
+
+**控制器**
+
+| 对象 | 职责 | 从哪里来 |
+|---|---|---|
+| `Service`(聚合根) | 持有 `spec` 与若干 `Tunnel`;`admit()`、`delete()`;保护选择(D2:不另建保护组对象,逻辑作为 `Service` 的方法) | `ProtectedService` + `ProtectionManager` 的业务逻辑 |
+| `Tunnel`(实体) | 自己的生命周期状态机:`onObserved(LspState)` 决定转换;拥有 `RetryState` | `ProtectedService` 里的 `primary`/`standby` 字段 + 管理器里的 if 分支 |
+| `RetryState` | `RetryPolicy` 产生的下一次时刻、次数、放弃 | 管理器里的重试代码 |
+| `ServiceRepository` | 加载/保存 `Service` 聚合到 `intent.*` | `JdbcProtectionStore` |
+| `ServiceCoordinator`(应用服务) | 串行化、计时器、把 RPC 与观测送到 `Service` | `ProtectionManager` 剩下的编排部分 |
+| `CrossDomainTunnel` + `Segment` | D1 的新对象,见 §8 O4 | 新增 |
+
+这比 O1(全面 spec/status 加对账器)轻:没有通用对账框架,只是把状态转换从管理器的分支挪进 `Tunnel` 自己的方法。
+
+### 10.4 设计规则
+
+1. **改状态只经所有者的方法**:实体不暴露 setter;集合(段表、ERO)不返回可变视图。
+2. **没有静态可变状态**:需要进程级共享的对象由 `PceContext`/控制器装配根创建并注入(§8 M1 的具体化)。
+3. **值对象不可变,解析只在构造处**:`LspName.parse`、`Path.of(ero)`。
+4. **一个操作一个对象**:信令事务、预留都有自己的生命周期和幂等的结算方法。
+5. **领域对象不知道传输**:`DomainLsp` 不认识 PCEP 编码;PCEP 编解码在适配层。
+
+### 10.5 顺序
+
+```
+salasim-model 值对象(LspName/LspRef/Path/DirectedLink)
+   ├─▶ 域 PCE:DomainLsp + LspDatabase ─▶ SignalingTransaction ─▶ BandwidthLedger/Reservation ─▶ ReactiveRecovery 拆出
+   └─▶ 控制器:Tunnel 状态机 + RetryState ─▶ Service 聚合 + ServiceRepository ─▶ CrossDomainTunnel(随 D1)
+```
+
+每一步都是行为不变的重构,以现有测试为安全网;值对象这一步同时改 PCE 和控制器,其余各自独立。
