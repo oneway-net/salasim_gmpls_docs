@@ -49,22 +49,17 @@ mkbody() {
   python3 - "$EXP" "$1" "$2" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))[sys.argv[2]]
-svc = {'service-id': d['serviceId'], 'source': d['sourceRouterId'], 'destination': d['destinationRouterId']}
+svc = {'service-id': d['serviceId']}      # deleting names only the service: the controller knows its tunnels
 if sys.argv[3] in ('create', 'create-protected'):
+    svc.update({'source': d['sourceRouterId'], 'destination': d['destinationRouterId']})
     svc['bandwidth'] = str(d['bandwidthBps'])
     svc['path-planning'] = {'optimization-metric': [{'metric-type': ('salasim-service-types:' if m == 'delay-variation'
         else 'ietf-te-types:') + 'path-metric-' + m} for m in d['pathMetrics']],
         'candidate-path-count': d['pathPlanning']['candidatePathCount']}
     if sys.argv[3] == 'create-protected':
-        p = d['protection']  # no tunnels: the controller chooses them
+        p = d['protection']
         svc['protection'] = {'mode': p['mode'], 'diversity': p['diversity'], 'revertive': p['revertive'],
                              'hold-off-time': p['holdOffMillis'], 'wait-to-revert': p['waitToRevertSeconds']}
-    else:
-        svc['tunnel'] = [{'tunnel-id': d['canonicalTunnelId'], 'role': 'primary'}]
-elif sys.argv[2] == 'protectedService':
-    pass  # deleting a protected service names no tunnels
-else:
-    svc['tunnel'] = [{'tunnel-id': d['canonicalTunnelId']}]
 print(json.dumps({'salasim-service-fleet:input': {'service': [svc]}}))
 PY
 }
@@ -109,8 +104,8 @@ want_path() { # key [root port symbol]: the ERO holds the expected router ids in
   echo "     ero: ${got:-<none>}   expected: $expected"; [[ "$got" == *"$expected"* ]]
 }
 
-heard() { # service tunnel state: the MDSC logged that notification (service-state-changed, RFC 5277)
-  "${COMPOSE[@]}" logs mdsc 2>&1 | grep -aq "service state: .* $1/$2 is $3"
+heard() { # service tunnel state: the MDSC logged that notification (lsp-state-changed, RFC 5277; the LSP is <service>/<tunnel>)
+  "${COMPOSE[@]}" logs mdsc 2>&1 | grep -aq "lsp state: .* $1/$2 is $3"
 }
 until_ 60 "the MDSC was told by the parent PCE that svc-1 is active" heard svc-1 primary active
 
@@ -153,7 +148,7 @@ remove intraService; echo "$LAST" | grep -q '"removed"' && ok "a second intra-do
 # the MDSC's northbound facts (salasim-fact network-fact), as a client receives them: RFC 8040 notification stream, SSE
 FACTS=/tmp/salasim-ref-facts.sse
 stream_open() { # file seconds: subscribe to network-fact on the MDSC and record the stream into file in the background
-  local s; s=$(restconf create-notification-stream '{"input":{"notifications":["(urn:salasim:fact?revision=2026-10-08)network-fact"]}}' \
+  local s; s=$(restconf create-notification-stream '{"input":{"notifications":["(urn:salasim:fact?revision=2026-10-10)network-fact"]}}' \
     | head -n -1 | python3 -c "import json,sys;print(json.load(sys.stdin)['sal-remote:output']['notification-stream-identifier'])") || return 1
   rm -f "$1"; (timeout "$2" curl -s -N -H 'Accept: text/event-stream' "http://127.0.0.1:$MDSC/restconf/streams/json/$s" > "$1" 2>&1 &)
 }
@@ -166,6 +161,9 @@ stream_open "$FACTS" 600 && ok "subscribed to the MDSC's network-fact stream" ||
 RESTCONF=$restconf_saved
 sleep 1
 PSYM=$(J "d['protectedService']['primarySymbolicPathName']"); SSYM=$(J "d['protectedService']['standbySymbolicPathName']")
+stored() { # column: what the controller stored for svc-3, in the core database's intent schema (lower case)
+  "${COMPOSE[@]}" exec -T core-db psql -U postgres -d salasim_core -tAc "select $1 from intent.protection where service_id = 'svc-3'" | tr -d '\r'
+}
 mdsc_log_count() { "${COMPOSE[@]}" logs mdsc 2>&1 | grep -ac "$1"; }
 queried() { # service-id leaf value: the controller's query-services answer has this leaf value for the service
   restconf query-services "{\"salasim-service-fleet:input\":{\"service\":[{\"service-id\":\"$1\"}]}}" \
@@ -180,7 +178,7 @@ routedTo d2 ref-pnc-d2 && ok "routed through the PNC of its domain" || bad "not 
 until_ 90 "the primary is on n3 n4 n5" want_path expectedPrimaryPathRouterIds protectedService "$D2" "$PSYM" || diag mdsc pce-d2
 until_ 90 "the MDSC was told that the standby is active (it is asked for only after the primary is)" heard svc-3 standby active
 until_ 30 "the standby is on n3 n5, diverse from the primary" want_path expectedStandbyPathRouterIds protectedService "$D2" "$SSYM" || diag mdsc pce-d2
-"${COMPOSE[@]}" exec -T mdsc sh -c 'cat /var/salasim/shared/protection/svc-3.properties' | grep -E '^(phase|selected)=' | sed 's/^/     stored: /'
+echo "     stored: phase=$(stored phase) selected=$(stored selected_tunnel)"
 until_ 30 "query-services through the controller: svc-3 is up" queried svc-3 oper-status up
 queried svc-3 selected-tunnel primary >/dev/null && ok "query-services: svc-3 is carried by the primary" || bad "query-services: wrong selected tunnel"
 
@@ -193,17 +191,14 @@ until_ 30 "the MDSC's stream carried the controller's protection-selection fact 
 until_ 30 "query-services: svc-3 is carried by the standby and still up" bash -c "$(declare -f restconf queried); EXP='$EXP'; RESTCONF='$RESTCONF'; queried svc-3 selected-tunnel standby && queried svc-3 oper-status up"
 
 replays() { restconf provision-services "$(mkbody protectedService create-protected)" | grep -q 'idempotent-replay'; }
-stored() { # leaf value: what the controller stored for svc-3
-  "${COMPOSE[@]}" exec -T mdsc cat /var/salasim/shared/protection/svc-3.properties | grep -E "^$1=" | cut -d= -f2
-}
 
 step "13. the controller restarts while the standby carries the service: it continues from what it stored"
-echo "     stored before the restart: selected=$(stored selected) phase=$(stored phase)"
-[[ "$(stored selected)" == STANDBY ]] && ok "the selection of the standby is stored" || bad "the selection was not stored"
+echo "     stored before the restart: selected=$(stored selected_tunnel) phase=$(stored phase)"
+[[ "$(stored selected_tunnel)" == standby ]] && ok "the selection of the standby is stored" || bad "the selection was not stored"
 "${COMPOSE[@]}" restart mdsc >/dev/null 2>&1 && ok "mdsc restarted" || bad "mdsc restart failed"
-until_ 90 "the restarted controller loaded the protected service" bash -c "${COMPOSE[*]} logs mdsc 2>&1 | grep -a 'protected service(s) loaded' | tail -1 | grep -qv ' 0 protected'"
+until_ 90 "the restarted controller loaded the service" bash -c "${COMPOSE[*]} logs mdsc 2>&1 | grep -a 'service(s) loaded' | tail -1 | grep -qv ' 0 service'"
 until_ 60 "the MDSC is mounted to its PCEs again (a repeated provision answers as a replay)" replays
-[[ "$(stored selected)" == STANDBY ]] && ok "still carried by the standby after the restart" || bad "the selection was lost by the restart"
+[[ "$(stored selected_tunnel)" == standby ]] && ok "still carried by the standby after the restart" || bad "the selection was lost by the restart"
 
 step "14. the link comes back: the lost primary is asked for again, and after wait-to-revert the service returns to it"
 "$HERE/restore.sh" >/dev/null && ok "carrier up written" || bad "restore failed"
@@ -214,7 +209,11 @@ step "15. remove the protected service: no tunnels listed, both legs go"
 if remove protectedService; then ok "delete admitted"; else bad "delete not admitted"; diag mdsc pce-d2; fi
 until_ 90 "the primary is gone from the domain PCE" gone "$D2" "$PSYM"
 until_ 90 "the standby is gone from the domain PCE" gone "$D2" "$SSYM"
-until_ 60 "the controller forgot the service (state file removed)" bash -c "! ${COMPOSE[*]} exec -T mdsc test -e /var/salasim/shared/protection/svc-3.properties"
+until_ 60 "the controller forgot the service (nothing of it left in the core database)" bash -c "[[ \$(${COMPOSE[*]} exec -T core-db psql -U postgres -d salasim_core -tAc \"select count(*) from intent.service where service_id = 'svc-3'\" | tr -d '\\r') == 0 ]]"
+lifecycle_fact() { stream_has "$FACTS" "\"service-id\":\"svc-3\",\"revision\":\"[0-9]*\",\"event\":\"$1\""; }
+for e in requested admitted deleting deleted; do
+  until_ 30 "the MDSC's stream carried the service-lifecycle fact $e of svc-3" lifecycle_fact $e
+done
 
 echo
 if [[ $FAIL -eq 0 ]]; then echo "RESULT: PASS"; else echo "RESULT: FAIL"; exit 1; fi
