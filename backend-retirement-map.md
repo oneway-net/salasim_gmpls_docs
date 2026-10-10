@@ -24,7 +24,7 @@
 
 | # | 缺口 | 旧功能 | 新平台里怎么做 |
 |---|---|---|---|
-| **G1** | **故障**进场景 | 随机链路故障、太阳中断(SRLG)、固定故障计划 | 场景规格加 `faults`;编译时用 `random_link_faults`/`sun_outage` 的结果把"链路故障/恢复"并进时间线(同一条链路上的载波 down/up,与几何可见性取与);进接触计划时标注(太阳中断是**可预测**的,随机故障不是)。这是场景的一部分,不是新机制 |
+| **G1** | **故障**进场景(**已补**,见 §2a) | 随机链路故障、太阳中断(SRLG)、固定故障计划 | 场景规格加 `faults`;编译时用 `random_link_faults`/`sun_outage` 的结果把"链路故障/恢复"并进时间线(同一条链路上的载波 down/up,与几何可见性取与);进接触计划时标注(太阳中断是**可预测**的,随机故障不是)。这是场景的一部分,不是新机制 |
 | **G2** | **结果与统计**(E2) | `v3_statistics`(1 万行)、切片、可用性、故障统计、信令时延、`/runs/{id}/...` | `salasim.results`:读 ClickHouse `history.*` 的事件,用会话的 `sim.sim_ms_at` 换成仿真时间,算服务可用性区间、恢复时延、操作计数、故障影响;API `/api/v2/sessions/{id}/results`。**不迁旧代码**(它建在帧/切片上);先做最小集,再按前端需要加 |
 | **G3** | **任务与状态流** | `operations/feed`、`runtime-state/stream`(SSE) | `/api/v2/tasks`(列表/查看/取消)与 `/api/v2/testbeds/{id}/events`(SSE:测试床状态、会话状态、任务进度) |
 | **G4** | **集群视图与镜像更新** | `cluster/pods`、`nodes`、`agents`、`images/update`、headlamp 信息 | `GET /api/v2/testbeds/{id}/pods`(带属主标签的只读视图)、任务 `testbed.update-images`(滚动重启核心与 fleet 到新镜像);headlamp 链接放配置 |
@@ -32,6 +32,19 @@
 | **G6** | **告警** | `ops/alarms`、确认 | 核心的告警在 MDSC 的 `ietf-alarms`(RESTCONF);平台只做带鉴权的转发 `/api/v2/testbeds/{id}/alarms`(列出、确认) |
 | **G7** | **平台自己的镜像与部署** | 旧 `salasim/backend` 镜像、部署清单、`update-cluster-and-test.sh` | `Dockerfile`(`python -m salasim_sim api|worker`)、平台的 K8s 清单(平台库、Redpanda/Connect/ClickHouse 已有)、`salasim/platform` 镜像 |
 | **G8** | **前端改接** | 前端 `/api/v1/runtime`(40 处)、`/api/v1/ops`(11)、`/api/v3/configuration*`(8) | R7:改用 `/api/v2`;G2–G6 是它的数据来源 |
+
+## 2a. 已补(2026-10-10,本地):平台驱动静态的网元与管控架构去模拟动态网络和业务
+
+网元(emulator)和管控架构(MDSC、PNC、PCE)是静态部署的,不知道仿真;平台经**三个入口**驱动它们:
+
+| 驱动什么 | 怎么驱动 | 位置 |
+|---|---|---|
+| **网络的动态**:链路可见性、时延、载波 | 场景编译出每端口的时间线,回放按到期墙钟时刻 `PUT` 到链路平面,设备读自己的端口并上报 | `scenario.compile`、`replay`、`client.medium` |
+| **故障**(G1,已补) | 场景的 `faults`:随机链路故障(交替更新过程、按场景定种子)、太阳中断(几何决定,**可预测**,进接触计划)、固定链路故障、**节点故障**(设备进程被关掉再起来:缩放其 Deployment,它连着的链路同时失去载波) | `scenario.faults`、`session`(`node_stop`/`node_start`)、`Kubectl.scale` |
+| **管控的预测输入** | 会话一开始,平台把接触计划(只含域间链路、换成该会话的墙钟)经 MDSC 的 `install-contact-plan` 交给父 PCE;MDSC 据此在链路被拿走前先建后拆地移动路由(P7 S5) | yang `install-contact-plan`,父 PCE 与 MDSC 的转发,`client.mdsc.contact_plan_input` |
+| **业务的动态** | 场景的 `workload`:到达过程(均匀、泊松)、端点(节点池、仅跨域/仅域内、加权对)、带宽分布(固定、均匀、分档)、业务类(保护与分离、方向、选路参数)、寿命(固定、指数、永久);提交与删除经 MDSC 北向 | `scenario.workload`、`client.mdsc` |
+
+所有生成都是确定的(场景名与种子)。随机故障与泊松到达之外的东西(未预测的故障)**不进**接触计划——控制面只能像真实网络那样从设备上报里发现它们。
 
 ## 3. 不再需要(不迁)
 
