@@ -1,10 +1,6 @@
 {
   "comment": "Ratchet baselines for docs/tools/fitness/fitness.py; counts may only go down.",
   "counts": {
-    "F11/es.tid.pce.computingEngine": 17,
-    "F11/es.tid.pce.parentPCE": 2,
-    "F11/es.tid.pce.server": 3,
-    "F11/es.tid.pce.util": 2,
     "F8/salasim_gmpls_pce": 1
   }
 }

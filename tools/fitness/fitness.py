@@ -364,8 +364,14 @@ def pce_layer(name: str) -> tuple[str, int] | None:
 
 
 def check_f11() -> list[Violation]:
-    """An import of a higher PCE layer from a lower one: one count per import line."""
+    """An import of a higher PCE layer from a lower one: one count per import line. Only classes of this module count:
+    a class another module provides (the topology jar shares some es.tid.pce packages) is that module's layering."""
     out: list[Violation] = []
+    own: set[str] = set()
+    for p in java_sources("salasim_gmpls_pce"):
+        pkg = re.search(r"^package\s+([\w.]+);", p.read_text(errors="replace"), re.M)
+        if pkg:
+            own.add(pkg.group(1) + "." + p.stem)
     for p in java_sources("salasim_gmpls_pce"):
         pkg = re.search(r"^package\s+([\w.]+);", p.read_text(errors="replace"), re.M)
         mine = pce_layer(pkg.group(1)) if pkg else None
@@ -373,7 +379,7 @@ def check_f11() -> list[Violation]:
             continue
         for lineno, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
             m = re.match(r"import\s+(?:static\s+)?([\w.]+);", line)
-            theirs = pce_layer(m.group(1)) if m else None
+            theirs = pce_layer(m.group(1)) if m and m.group(1) in own else None
             if theirs and theirs[1] > mine[1]:
                 out.append((f"F11/{mine[0]}", f"{rel(p)}:{lineno}: {mine[0]} (layer {mine[1]}) imports {theirs[0]} (layer {theirs[1]})"))
     return out
