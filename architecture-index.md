@@ -9,6 +9,7 @@
 | 1 | `control-system-architecture.md` (v2) | 分层与依赖规则、核心对象与权威来源、时间模型、仿真模块、保真度 |
 | 2 | `commercial-architecture.md` | 商业运营:SaaS、测试床池、计费、合规 |
 | 2a | `system-redesign-v3.md` | 四个组件(Backend、controller、PCE、emulator)的职责、接口与数据库;实施阶段 R0–R7(2026-10-09) |
+| 2b | `object-model.md` | 对象目录与权威所有者(业务、隧道、LSP、链路…);跨域由 MDSC 缝合(2026-10-10 设计稿) |
 | 3 | `system-architecture.md` (v2) | 功能、软件工程、代码结构;实施阶段 P0–P7 与 M1 |
 | 4 | `platform-data-architecture.md` | 平台层表结构与已验证机制(分层与命名以 #1 为准) |
 | 5 | `network-native-database-design.md` | 核心事实表结构(键、时间轴、归属待按 #1 v2 重写) |
