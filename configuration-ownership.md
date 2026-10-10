@@ -63,8 +63,7 @@
 - 安全/内存边界：`salasim.pce.api.maxBodyBytes`、`salasim.pce.api.topologyTextMaxChars`、
   `salasim.pce.sse.clientQueueSize`、`salasim.pce.linkEvent.maxPendingBatches`、
   `salasim.pce.parent.linkEvent.maxReorderedBatches`
-- 永远开着的开关：`salasim.pce.api.readonly.enabled`、`salasim.pce.api.control.enabled`、
-  `salasim.pce.api.debugActions.enabled`、`salasim.pce.retry.enabled`、`salasim.emulator.mplsOnly`
+- 永远开着的开关：`salasim.pce.api.readonly.enabled`、`salasim.pce.retry.enabled`(2026-10-10:`api.control.enabled` 与 `api.debugActions.enabled` 随 HTTP 控制 API 一起删除)、`salasim.emulator.mplsOnly`
 - 只影响"多久注意到"而不影响行为的节拍：`salasim.pce.sse.keepaliveSeconds`、
   `salasim.pce.sim.clockMaxWaitMs`、`salasim.pce.sim.clockShutdownJoinMs`、
   `salasim.pce.parent.protectionPausedPollMs`、
