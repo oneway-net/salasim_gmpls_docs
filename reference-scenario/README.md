@@ -36,9 +36,10 @@ Faster re-runs: `./run.sh up --no-build`. Host ports (127.0.0.1): parent PCE 180
 MDSC RESTCONF 18181, node APIs 18101–18105.
 
 ## Start order (why `run.sh` is staged)
-medium → nodes → domain PCEs → PNCs + MDSC → **wait for `composed-topology.json`** → parent PCE. The parent reads the
-composed topology file at start and has no way to receive it later; starting it earlier fails. That is a robustness gap
-(the parent should accept the MDSC's `report-topology-change` against an empty start), recorded in the architecture doc.
+medium → nodes → domain PCEs → PNCs + MDSC → **wait for `composed-topology.json`** → parent PCE. `run.sh` still stages
+it this way, but the parent no longer needs to: it loads the composed topology file on the first request that finds it
+(`ParentActualTopologyBootstrap.Source`), and until then answers 503 "no composed topology yet", which the MDSC retries.
+(Before 2026-10-14 a parent started ahead of the file stayed without a topology and refused every report.)
 Each PCE's actual-topology network id is `salasim:<domain>`.
 
 ## What `check.sh` proves
