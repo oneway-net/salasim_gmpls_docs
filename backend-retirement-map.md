@@ -12,6 +12,9 @@ src/salasim/                平台(一个进程:API + 任务工作者)
   profiles/      platform.profile:配置档(取代 SQLite 的 configuration_profile_store)
   k8s/           kubectl 封装、命名空间安全、镜像服务(由 kubectl_ops 等迁来)
   results/       E2:分析在平台——从 core_api_v1 × sim.session 算窗口、可用性、恢复时延、操作统计
+                 【G2 首版已做(2026-10-12,backend 7b41f6d)】实际读的是分析库 ClickHouse `history.*`(按运行 id),不是 core_api_v1;
+                 在 `salasim_sim/results/`:每次运行一份报告(控制面时延、开通、可用性、恢复、质量标注),实验按种子汇总(均值+95% 区间);
+                 `/api/v2/runs/{id}/report`、`/experiments/{id}/report`。未做:窗口/切片查询、趋势图时间序列、对比、MDSC 跨域搜索时延
   api/           FastAPI 应用(OpenAPI):/health、/api/v2/testbeds、/tasks、/profiles、/sessions、/results
   worker.py      任务工作者:按 kind 分派到 testbed/sim 的处理函数
   __main__.py    python -m salasim api|worker
